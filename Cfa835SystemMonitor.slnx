@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/Cfa835SystemMonitor/Cfa835SystemMonitor.csproj" />
+  <Project Path="tests/Cfa835SystemMonitor.Tests/Cfa835SystemMonitor.Tests.csproj" />
+</Solution>

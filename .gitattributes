@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.slnx text eol=lf
+*.csproj text eol=lf
+*.props text eol=lf
+*.json text eol=lf
