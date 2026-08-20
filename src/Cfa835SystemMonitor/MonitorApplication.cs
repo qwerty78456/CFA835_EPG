@@ -30,7 +30,10 @@ public sealed class MonitorApplication
         }
 
         CfaDeviceLocator locator = new(_options.Device);
-        PageController pages = new(_options.Display);
+        PageController pages = new(
+            _options.Display,
+            _options.Shutdown,
+            new WindowsShutdownExecutor(_loggerFactory.CreateLogger<WindowsShutdownExecutor>()));
         int retrySeconds = 1;
 
         while (!cancellationToken.IsCancellationRequested)

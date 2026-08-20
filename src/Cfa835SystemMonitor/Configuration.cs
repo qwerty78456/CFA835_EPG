@@ -9,6 +9,7 @@ public sealed class MonitorOptions
     public SamplingOptions Sampling { get; init; } = new();
     public DisplayOptions Display { get; init; } = new();
     public ThermalOptions Thermal { get; init; } = new();
+    public ShutdownOptions Shutdown { get; init; } = new();
 
     public static MonitorOptions Load(string? requestedPath)
     {
@@ -52,6 +53,7 @@ public sealed class MonitorOptions
         Sampling.Validate();
         Display.Validate();
         Thermal.Validate();
+        Shutdown.Validate();
     }
 }
 
@@ -141,6 +143,23 @@ public sealed class ThermalOptions
         if (TjMaxC is < 50 or > 150 || WarningMarginC is <= 0 or > 50 || ClearHysteresisC is < 0 or > 20)
         {
             throw new InvalidDataException("thermal settings are outside their safe validation ranges.");
+        }
+    }
+}
+
+public sealed class ShutdownOptions
+{
+    public const int MinCountdownSeconds = 5;
+    public const int MaxCountdownSeconds = 3600;
+
+    public int CountdownSeconds { get; init; } = 30;
+
+    internal void Validate()
+    {
+        if (CountdownSeconds is < MinCountdownSeconds or > MaxCountdownSeconds)
+        {
+            throw new InvalidDataException(
+                $"shutdown.countdownSeconds must be between {MinCountdownSeconds} and {MaxCountdownSeconds}.");
         }
     }
 }

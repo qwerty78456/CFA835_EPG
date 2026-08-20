@@ -7,7 +7,15 @@ public enum PageCategory
     DateTime,
     Cpu,
     Temperatures,
-    Network
+    Network,
+    Shutdown
+}
+
+public enum ShutdownUiState
+{
+    Idle,
+    Confirm,
+    CountingDown
 }
 
 public static class ScreenFormatter
@@ -41,21 +49,41 @@ public static class ScreenFormatter
     }
 }
 
-public sealed class PageController(DisplayOptions options)
+public sealed class PageController(
+    DisplayOptions options,
+    ShutdownOptions shutdownOptions,
+    IShutdownExecutor shutdownExecutor)
 {
+    private enum PendingShutdownAction
+    {
+        None,
+        Start,
+        Abort
+    }
+
     private readonly object _sync = new();
     private PageCategory _category = PageCategory.DateTime;
     private int _temperaturePage;
     private int _temperatureCount;
     private DateTimeOffset _nextAuto = DateTimeOffset.MinValue;
     private DateTimeOffset _lastKeyAt = DateTimeOffset.MinValue;
+    private ShutdownUiState _shutdownState = ShutdownUiState.Idle;
+    private bool _confirmYes;
+    private int _pendingSeconds = shutdownOptions.CountdownSeconds;
+    private DateTimeOffset _shutdownDeadline;
 
     public bool AutoCycle { get; private set; } = options.AutoCycleOnStart;
     public PageCategory Category => _category;
     public int TemperaturePage => _temperaturePage;
+    public ShutdownUiState ShutdownState => _shutdownState;
+    public bool ConfirmYesSelected => _confirmYes;
+    public int PendingSeconds => _pendingSeconds;
 
     public bool HandleKey(CfaKey key, DateTimeOffset now)
     {
+        PendingShutdownAction action = PendingShutdownAction.None;
+        int seconds = 0;
+        bool handled;
         lock (_sync)
         {
             if (now - _lastKeyAt < TimeSpan.FromMilliseconds(100))
@@ -64,40 +92,133 @@ public sealed class PageController(DisplayOptions options)
             }
 
             _lastKeyAt = now;
-            switch (key)
+            switch (_shutdownState)
             {
-                case CfaKey.Left:
-                    _category = Previous(_category);
+                case ShutdownUiState.Confirm:
+                    handled = HandleConfirmKey(key, now, out action);
+                    seconds = _pendingSeconds;
                     break;
-                case CfaKey.Right:
-                    _category = Next(_category);
-                    break;
-                case CfaKey.Up when _category == PageCategory.Temperatures:
-                    _temperaturePage = WrapTemperaturePage(_temperaturePage - 1);
-                    break;
-                case CfaKey.Down when _category == PageCategory.Temperatures:
-                    _temperaturePage = WrapTemperaturePage(_temperaturePage + 1);
-                    break;
-                case CfaKey.Enter:
-                    AutoCycle = !AutoCycle;
-                    _nextAuto = now.AddSeconds(options.AutoCycleSeconds);
-                    break;
-                case CfaKey.Exit:
-                    AutoCycle = false;
-                    _category = PageCategory.DateTime;
+                case ShutdownUiState.CountingDown:
+                    handled = HandleCountdownKey(key, out action);
                     break;
                 default:
-                    return false;
+                    handled = HandleIdleKey(key, now);
+                    break;
             }
-
-            return true;
         }
+
+        // Invoked after releasing the lock so the process launch never stalls other
+        // key/render callers; the executor is contractually non-throwing. Both actions
+        // originate from the single serial key-report stream (plus the 100ms debounce),
+        // so Start/Abort cannot reorder in practice.
+        if (action == PendingShutdownAction.Start)
+        {
+            shutdownExecutor.RequestShutdown(seconds);
+        }
+        else if (action == PendingShutdownAction.Abort)
+        {
+            shutdownExecutor.Abort();
+        }
+
+        return handled;
+    }
+
+    private bool HandleIdleKey(CfaKey key, DateTimeOffset now)
+    {
+        switch (key)
+        {
+            case CfaKey.Left:
+                _category = Previous(_category);
+                break;
+            case CfaKey.Right:
+                _category = Next(_category);
+                break;
+            case CfaKey.Up when _category == PageCategory.Temperatures:
+                _temperaturePage = WrapTemperaturePage(_temperaturePage - 1);
+                break;
+            case CfaKey.Down when _category == PageCategory.Temperatures:
+                _temperaturePage = WrapTemperaturePage(_temperaturePage + 1);
+                break;
+            case CfaKey.Enter when _category == PageCategory.Shutdown:
+                _shutdownState = ShutdownUiState.Confirm;
+                _confirmYes = false;
+                _pendingSeconds = shutdownOptions.CountdownSeconds;
+                break;
+            case CfaKey.Enter:
+                AutoCycle = !AutoCycle;
+                _nextAuto = now.AddSeconds(options.AutoCycleSeconds);
+                break;
+            case CfaKey.Exit:
+                AutoCycle = false;
+                _category = PageCategory.DateTime;
+                break;
+            default:
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool HandleConfirmKey(CfaKey key, DateTimeOffset now, out PendingShutdownAction action)
+    {
+        action = PendingShutdownAction.None;
+        switch (key)
+        {
+            case CfaKey.Left:
+                _confirmYes = true;
+                break;
+            case CfaKey.Right:
+                _confirmYes = false;
+                break;
+            case CfaKey.Up:
+                _pendingSeconds = Math.Min(ShutdownOptions.MaxCountdownSeconds, _pendingSeconds + 5);
+                break;
+            case CfaKey.Down:
+                _pendingSeconds = Math.Max(ShutdownOptions.MinCountdownSeconds, _pendingSeconds - 5);
+                break;
+            case CfaKey.Enter when _confirmYes:
+                _shutdownDeadline = now.AddSeconds(_pendingSeconds);
+                _shutdownState = ShutdownUiState.CountingDown;
+                AutoCycle = false;
+                action = PendingShutdownAction.Start;
+                break;
+            case CfaKey.Enter:
+            case CfaKey.Exit:
+                _shutdownState = ShutdownUiState.Idle;
+                break;
+            default:
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool HandleCountdownKey(CfaKey key, out PendingShutdownAction action)
+    {
+        action = PendingShutdownAction.None;
+        if (key != CfaKey.Exit)
+        {
+            // Page switching and re-arming are blocked while the countdown runs.
+            return false;
+        }
+
+        action = PendingShutdownAction.Abort;
+        _shutdownState = ShutdownUiState.Idle;
+        _category = PageCategory.DateTime;
+        AutoCycle = false;
+        return true;
     }
 
     public bool Tick(DateTimeOffset now)
     {
         lock (_sync)
         {
+            // Confirm and countdown are modal: never page away under the user's feet.
+            if (_shutdownState != ShutdownUiState.Idle)
+            {
+                return false;
+            }
+
             if (!AutoCycle)
             {
                 return false;
@@ -121,7 +242,9 @@ public sealed class PageController(DisplayOptions options)
             }
             else
             {
-                _category = Next(_category);
+                // Auto-cycle skips the Shutdown page (it may still advance *off* it when
+                // the user parks there with auto-cycle on); manual Left/Right reaches it.
+                _category = NextAutoCycle(_category);
                 if (_category == PageCategory.Temperatures)
                 {
                     _temperaturePage = 0;
@@ -139,12 +262,18 @@ public sealed class PageController(DisplayOptions options)
         {
             _temperatureCount = snapshot.Temperatures.Count;
             _temperaturePage = Math.Min(_temperaturePage, Math.Max(0, TemperaturePageCount() - 1));
-            return _category switch
+            return _shutdownState switch
             {
-                PageCategory.Cpu => RenderCpu(snapshot, thermal),
-                PageCategory.Temperatures => RenderTemperatures(snapshot),
-                PageCategory.Network => RenderNetwork(snapshot),
-                _ => RenderDateTime(snapshot.Timestamp)
+                ShutdownUiState.Confirm => RenderShutdownConfirm(),
+                ShutdownUiState.CountingDown => RenderShutdownCountdown(snapshot.Timestamp),
+                _ => _category switch
+                {
+                    PageCategory.Cpu => RenderCpu(snapshot, thermal),
+                    PageCategory.Temperatures => RenderTemperatures(snapshot),
+                    PageCategory.Network => RenderNetwork(snapshot),
+                    PageCategory.Shutdown => RenderShutdownIdle(),
+                    _ => RenderDateTime(snapshot.Timestamp)
+                }
             };
         }
     }
@@ -200,6 +329,34 @@ public sealed class PageController(DisplayOptions options)
         return rows;
     }
 
+    private string[] RenderShutdownIdle() =>
+    [
+        ScreenFormatter.Fit("SHUTDOWN"),
+        ScreenFormatter.Fit("Press ENTER to shut"),
+        ScreenFormatter.Fit("down this device"),
+        ScreenFormatter.Fit($"Timeout: {shutdownOptions.CountdownSeconds}s")
+    ];
+
+    private string[] RenderShutdownConfirm() =>
+    [
+        ScreenFormatter.Fit("SHUTDOWN DEVICE?"),
+        ScreenFormatter.Fit($"Delay: {_pendingSeconds}s (UP/DN)"),
+        ScreenFormatter.Fit(_confirmYes ? " >YES<         NO" : "  YES         >NO<"),
+        ScreenFormatter.Fit("ENTER=OK  X=BACK")
+    ];
+
+    private string[] RenderShutdownCountdown(DateTimeOffset timestamp)
+    {
+        int remaining = Math.Max(0, (int)Math.Ceiling((_shutdownDeadline - timestamp).TotalSeconds));
+        return
+        [
+            ScreenFormatter.Fit("SHUTTING DOWN"),
+            ScreenFormatter.Fit($"IN {remaining}s"),
+            ScreenFormatter.Fit(string.Empty),
+            ScreenFormatter.Fit("PRESS X TO CANCEL")
+        ];
+    }
+
     private static string[] RenderNetwork(MetricSnapshot snapshot) =>
     [
         ScreenFormatter.Fit("NETWORK Mbps"),
@@ -216,11 +373,20 @@ public sealed class PageController(DisplayOptions options)
 
     private int TemperaturePageCount() => Math.Max(1, (_temperatureCount + 2) / 3);
 
+    private static readonly int PageCount = Enum.GetValues<PageCategory>().Length;
+
     private static PageCategory Next(PageCategory category) =>
-        (PageCategory)(((int)category + 1) % 4);
+        (PageCategory)(((int)category + 1) % PageCount);
 
     private static PageCategory Previous(PageCategory category) =>
-        (PageCategory)(((int)category + 3) % 4);
+        (PageCategory)(((int)category + PageCount - 1) % PageCount);
+
+    // Auto-cycle never lands on the Shutdown page; it is reachable only manually.
+    private static PageCategory NextAutoCycle(PageCategory category)
+    {
+        PageCategory next = Next(category);
+        return next == PageCategory.Shutdown ? Next(next) : next;
+    }
 }
 
 public sealed class ScreenWriter
