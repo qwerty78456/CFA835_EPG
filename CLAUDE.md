@@ -9,13 +9,13 @@ This directory contains two sibling folders, not one project root:
 - `Cfa835SystemMonitor-640d1d649e28-source/` — the actual C# solution. All development happens here.
 - `Cfa835SystemMonitor-640d1d649e28-win-x64/` — a pre-built, self-contained `win-x64` publish output of that same source (commit `640d1d649e28`, see `COMMIT.txt`). Treat it as a build artifact, not source; don't hand-edit files in it.
 
-There is no git repository at the top level or inside the source folder (`git status` fails with "not a git repository"). `scripts/Build-Release.ps1` shells out to `git rev-parse`/`git archive` and will fail until the source folder is initialized as a git repo with at least one commit.
+There is no git repository at the top level, but `Cfa835SystemMonitor-640d1d649e28-source/` is its own git repo (`origin` → `https://github.com/qwerty78456/CFA835_EPG.git`, branch `main`). The `Cfa835SystemMonitor-640d1d649e28-win-x64/` publish output is pinned to an older commit (`640d1d649e28`, see `COMMIT.txt`) and does not reflect the current source tree — don't assume the two are in sync.
 
 All commands below assume the working directory is `Cfa835SystemMonitor-640d1d649e28-source/`.
 
 ## What this project is
 
-A Windows-only .NET 10 service/console app that drives a Crystalfontz CFA835 USB LCD+keypad+LED module as a system monitor: date/time, total CPU%, every LibreHardwareMonitor temperature sensor, and aggregate physical-NIC throughput on a 4-line/20-column text display, with 4 bi-color LEDs for power/disk/network/CPU-thermal state. The keypad cycles pages.
+A Windows-only .NET 10 service/console app that drives a Crystalfontz CFA835 USB LCD+keypad+LED module as a system monitor: date/time, total CPU%, every LibreHardwareMonitor temperature sensor, and aggregate physical-NIC throughput on a 4-line/20-column text display, with 4 bi-color LEDs for power/disk/network/CPU-thermal state. The keypad cycles pages, plus a manually-reachable Shutdown page that confirms, lets you adjust the countdown, and then shells out to `shutdown.exe`.
 
 ## Commands
 
@@ -62,9 +62,10 @@ CfaTransport.cs        → ICfaTransport / SerialCfaTransport: raw serial I/O, f
 CfaProtocol.cs          → CfaPacket: wire encode/decode + CRC-16/CCITT (reversed) per the CFA835 datasheet
 CfaDevice.cs             → CfaDeviceLocator (registry-based USB VID/PID/serial → COM port resolution) and Cfa835Device (typed command wrappers: rows, LEDs, keymasks, version)
 WindowsMetrics.cs         → IMetricSource / WindowsMetricSource: CPU% (GetSystemTimes), disk activity (PDH), NIC throughput (GetIfTable2 via iphlpapi), temperatures (LibreHardwareMonitor)
-DisplayAndLeds.cs          → PageController (keypad/auto-cycle state machine + page rendering), ScreenWriter (diff-based row writes), LedStateMachine (LED policy), SimulationMetricSource
+DisplayAndLeds.cs          → PageController (keypad/auto-cycle state machine + page rendering, including the Shutdown page's Confirm/CountingDown sub-states), ScreenWriter (diff-based row writes), LedStateMachine (LED policy), SimulationMetricSource
 Models.cs                   → CfaKey enum, TemperatureReading/InterfaceReading/MetricSnapshot records, IMetricSource interface
 Configuration.cs             → MonitorOptions and sub-option records, JSON config loading/validation, CommandLineOptions parsing
+ShutdownExecutor.cs          → IShutdownExecutor / WindowsShutdownExecutor: shells out to shutdown.exe /s and /a; never throws (runs on the transport's key-event thread)
 ```
 
 Key design points:
@@ -78,6 +79,7 @@ Key design points:
 - **LED GPIO mapping is hardcoded** in `Cfa835Device.LedGpio` (green/red GPIO pin pairs per logical LED 0–3) per the datasheet; `SetLedAsync` caches last-written levels per LED to skip redundant writes.
 - **Registry-based device discovery**: `CfaDeviceLocator` looks up `HKLM\SYSTEM\CurrentControlSet\Enum\USB\VID_xxxx&PID_xxxx\<serial>\Device Parameters\PortName`, filtered by configured serial, falling back to `device.fallbackPort` if no match is present in `SerialPort.GetPortNames()`.
 - **Configuration** (`appsettings.json`) is loaded from `%ProgramData%\Cfa835SystemMonitor\appsettings.json` when installed as a service, else `AppContext.BaseDirectory`, else `--config <path>`; every options group self-validates range/format on load and throws `InvalidDataException` (mapped to exit code 78) on bad values.
+- **The Shutdown page is opt-in only.** `PageController` excludes `PageCategory.Shutdown` from auto-cycling — it's reachable only by manually paging to it — and its state machine (`Idle → Confirm → CountingDown`) lets Left/Right adjust the countdown (`ShutdownOptions.MinCountdownSeconds`/`MaxCountdownSeconds`) before Enter commits to `IShutdownExecutor.RequestShutdown`; any key during the countdown calls `Abort()` (`shutdown /a`).
 - **`--diagnose` and `--hardware-test` are read-only/restore-on-exit by design** — `--diagnose` never touches display/LED/keymask state; `--hardware-test` snapshots keymasks/rows/LEDs before running and restores them in a `finally`, even on timeout.
 - Native interop (P/Invoke) is used directly for CPU times (`kernel32!GetSystemTimes`), disk throughput (`pdh.dll`), and NIC stats (`iphlpapi!GetIfTable2`) rather than going through WMI/PerformanceCounter, for lower overhead in the tight polling loop.
 
