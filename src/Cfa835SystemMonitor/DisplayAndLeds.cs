@@ -259,10 +259,10 @@ public sealed class PageController(
         double? temperature = snapshot.Temperatures.FirstOrDefault()?.Celsius;
         return
         [
-            ScreenFormatter.Fit("SYSTEM MONITOR"),
             ScreenFormatter.Fit(
                 $"{local.ToString(options.DateFormat, CultureInfo.InvariantCulture)} " +
                 local.ToString(options.TimeFormat, CultureInfo.InvariantCulture)),
+            ScreenFormatter.Fit($"CPU UTIL{snapshot.CpuPercent,11:0.0}%"),
             ScreenFormatter.Fit($"TEMPERATURE{ScreenFormatter.TemperatureValue(temperature),9}"),
             ScreenFormatter.Fit($"AUTO: {(AutoCycle ? "ON" : "OFF")}")
         ];

@@ -50,8 +50,9 @@ public sealed class DisplayTests
 
         string[] rows = pages.Render(snapshot, new ThermalOptions());
 
-        Assert.StartsWith("SYSTEM MONITOR", rows[0]);
-        Assert.StartsWith("2026-08-17 12:34:56", rows[1]);
+        Assert.StartsWith("2026-08-17 12:34:56", rows[0]);
+        Assert.StartsWith("CPU UTIL", rows[1]);
+        Assert.EndsWith("23.4%", rows[1]);
         Assert.StartsWith("TEMPERATURE", rows[2]);
         Assert.Contains("31.5", rows[2]);
         Assert.StartsWith("AUTO: OFF", rows[3]);

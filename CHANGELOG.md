@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Replaced the main-page title row with CPU utilization, positioned between date/time and temperature.
 - Consolidated temperature reporting into one `TEMPERATURE` value on the main system-monitor page.
 - Prefer the hottest valid LibreHardwareMonitor/PawnIO temperature and use the hottest Windows ACPI thermal zone only when the primary path has no readable value.
 - Exclude `Distance to TjMax` values from system-temperature aggregation.
