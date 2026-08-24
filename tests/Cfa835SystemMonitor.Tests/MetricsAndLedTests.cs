@@ -79,6 +79,43 @@ public sealed class MetricsAndLedTests
     }
 
     [Fact]
+    public void TemperatureReadingsFallBackWhenPrimaryValuesAreUnavailable()
+    {
+        TemperatureReading[] primary =
+        [
+            new("Intel CPU", "CPU Package", null, true),
+            new("Intel CPU", "Core Max", double.NaN, true)
+        ];
+        TemperatureReading[] fallback =
+        [
+            new("Windows ACPI", "TZ00", 31.5, false),
+            new("Windows ACPI", "TZ01", 33.5, false)
+        ];
+
+        IReadOnlyList<TemperatureReading> selected = TemperatureReadingSelector.PreferReadable(primary, fallback);
+
+        Assert.Equal(2, selected.Count);
+        Assert.All(selected, reading => Assert.Equal("Windows ACPI", reading.Hardware));
+    }
+
+    [Fact]
+    public void TemperatureReadingsPreferReadablePrimaryValues()
+    {
+        TemperatureReading[] primary =
+        [
+            new("Intel CPU", "CPU Package", 51, true),
+            new("Intel CPU", "Core Max", null, true)
+        ];
+        TemperatureReading[] fallback = [new("Windows ACPI", "TZ00", 31.5, false)];
+
+        IReadOnlyList<TemperatureReading> selected = TemperatureReadingSelector.PreferReadable(primary, fallback);
+
+        TemperatureReading reading = Assert.Single(selected);
+        Assert.Equal("CPU Package", reading.Name);
+        Assert.Equal(51, reading.Celsius);
+    }
+
+    [Fact]
     public void LedColorsRepresentDiskAndNetworkDirection()
     {
         LedStateMachine machine = new(new ThermalOptions());

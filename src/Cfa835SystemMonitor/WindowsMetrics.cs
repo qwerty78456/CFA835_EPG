@@ -88,6 +88,31 @@ public static class CpuTemperatureSelector
         .Max();
 }
 
+public static class TemperatureReadingSelector
+{
+    public static IReadOnlyList<TemperatureReading> PreferReadable(
+        IEnumerable<TemperatureReading> primary,
+        IEnumerable<TemperatureReading> fallback)
+    {
+        TemperatureReading[] readable = primary
+            .Where(IsReadable)
+            .OrderBy(item => item.Hardware, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return readable.Length > 0
+            ? readable
+            : fallback
+                .Where(IsReadable)
+                .OrderBy(item => item.Hardware, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+    }
+
+    private static bool IsReadable(TemperatureReading reading) =>
+        reading.Celsius.HasValue && double.IsFinite(reading.Celsius.Value);
+}
+
 public sealed class CpuUsageSampler
 {
     private ulong? _idle;
@@ -423,6 +448,8 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
 {
     private Computer? _computer;
     private DateTimeOffset _openedAt;
+    private readonly ThermalZoneTemperatureSampler _thermalZones = new(logger);
+    private bool _fallbackLogged;
 
     public IReadOnlyList<TemperatureReading> Poll(DateTimeOffset now)
     {
@@ -437,10 +464,17 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
             UpdateAndCollect(hardware, readings);
         }
 
-        return readings
-            .OrderBy(item => item.Hardware, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        IReadOnlyList<TemperatureReading> selected = TemperatureReadingSelector.PreferReadable(
+            readings,
+            _thermalZones.Sample());
+        if (!_fallbackLogged && selected.Count > 0 && selected.All(reading => reading.Hardware == "Windows ACPI"))
+        {
+            logger.LogWarning(
+                "LibreHardwareMonitor returned no readable temperatures; using Windows ACPI thermal-zone fallback");
+            _fallbackLogged = true;
+        }
+
+        return selected;
     }
 
     private void Reopen(DateTimeOffset now)
@@ -498,5 +532,163 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
     {
         _computer?.Close();
         _computer = null;
+        _thermalZones.Dispose();
+    }
+}
+
+public sealed class ThermalZoneTemperatureSampler : IDisposable
+{
+    private const uint PdhFmtDouble = 0x00000200;
+    private const uint PdhMoreData = 0x800007D2;
+    private const string CounterPath = @"\Thermal Zone Information(*)\Temperature";
+    private readonly ILogger _logger;
+    private readonly List<(string Name, IntPtr Counter)> _counters = [];
+    private IntPtr _query;
+
+    public ThermalZoneTemperatureSampler(ILogger logger)
+    {
+        _logger = logger;
+        TryOpen();
+    }
+
+    public IReadOnlyList<TemperatureReading> Sample()
+    {
+        if (_query == IntPtr.Zero && !TryOpen())
+        {
+            return Array.Empty<TemperatureReading>();
+        }
+
+        if (PdhCollectQueryData(_query) != 0)
+        {
+            return Array.Empty<TemperatureReading>();
+        }
+
+        List<TemperatureReading> readings = [];
+        foreach ((string name, IntPtr counter) in _counters)
+        {
+            uint status = PdhGetFormattedCounterValue(counter, PdhFmtDouble, IntPtr.Zero, out PdhFormattedCounterValue value);
+            if (status == 0 && value.CStatus == 0 && value.DoubleValue is >= 200 and <= 500)
+            {
+                readings.Add(new TemperatureReading("Windows ACPI", name, value.DoubleValue - 273.15, false));
+            }
+        }
+
+        return readings;
+    }
+
+    private bool TryOpen()
+    {
+        Dispose();
+        uint status = PdhOpenQuery(null, UIntPtr.Zero, out _query);
+        if (status != 0)
+        {
+            _query = IntPtr.Zero;
+            return false;
+        }
+
+        uint length = 0;
+        status = PdhExpandWildCardPath(null, CounterPath, null, ref length, 0);
+        if (status != PdhMoreData || length == 0)
+        {
+            Dispose();
+            return false;
+        }
+
+        char[] paths = new char[length];
+        status = PdhExpandWildCardPath(null, CounterPath, paths, ref length, 0);
+        if (status != 0)
+        {
+            Dispose();
+            return false;
+        }
+
+        foreach (string path in ParseMultiString(paths))
+        {
+            if (PdhAddEnglishCounter(_query, path, UIntPtr.Zero, out IntPtr counter) == 0)
+            {
+                _counters.Add((InstanceName(path), counter));
+            }
+        }
+
+        if (_counters.Count == 0)
+        {
+            Dispose();
+            return false;
+        }
+
+        _ = PdhCollectQueryData(_query);
+        _logger.LogInformation("Windows ACPI thermal-zone fallback initialized with {Count} counter(s)", _counters.Count);
+        return true;
+    }
+
+    private static IEnumerable<string> ParseMultiString(char[] buffer)
+    {
+        int start = 0;
+        for (int index = 0; index < buffer.Length; index++)
+        {
+            if (buffer[index] != '\0')
+            {
+                continue;
+            }
+
+            if (index == start)
+            {
+                yield break;
+            }
+
+            yield return new string(buffer, start, index - start);
+            start = index + 1;
+        }
+    }
+
+    private static string InstanceName(string path)
+    {
+        int open = path.IndexOf('(');
+        int close = path.IndexOf(')', open + 1);
+        return open >= 0 && close > open ? path[(open + 1)..close] : "Thermal Zone";
+    }
+
+    public void Dispose()
+    {
+        _counters.Clear();
+        if (_query != IntPtr.Zero)
+        {
+            _ = PdhCloseQuery(_query);
+            _query = IntPtr.Zero;
+        }
+    }
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    private static extern uint PdhExpandWildCardPath(
+        string? dataSource,
+        string wildcardPath,
+        [Out] char[]? expandedPathList,
+        ref uint pathListLength,
+        uint flags);
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    private static extern uint PdhOpenQuery(string? dataSource, UIntPtr userData, out IntPtr query);
+
+    [DllImport("pdh.dll", EntryPoint = "PdhAddEnglishCounterW", CharSet = CharSet.Unicode)]
+    private static extern uint PdhAddEnglishCounter(IntPtr query, string counterPath, UIntPtr userData, out IntPtr counter);
+
+    [DllImport("pdh.dll")]
+    private static extern uint PdhCollectQueryData(IntPtr query);
+
+    [DllImport("pdh.dll")]
+    private static extern uint PdhGetFormattedCounterValue(
+        IntPtr counter,
+        uint format,
+        IntPtr counterType,
+        out PdhFormattedCounterValue value);
+
+    [DllImport("pdh.dll")]
+    private static extern uint PdhCloseQuery(IntPtr query);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PdhFormattedCounterValue
+    {
+        public uint CStatus;
+        public double DoubleValue;
     }
 }

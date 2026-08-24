@@ -62,6 +62,25 @@ public sealed class DisplayTests
     }
 
     [Fact]
+    public void CpuPageShowsSystemFallbackWithoutClaimingCpuThermalMargin()
+    {
+        PageController pages = Controller(_display, new FakeShutdownExecutor());
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-17T12:00:00Z");
+        pages.HandleKey(CfaKey.Right, now);
+        MetricSnapshot snapshot = Snapshot() with
+        {
+            Temperatures = [new TemperatureReading("Windows ACPI", "TZ00", 31.5, false)],
+            HottestCpuC = null
+        };
+
+        string[] rows = pages.Render(snapshot, new ThermalOptions());
+
+        Assert.StartsWith("System", rows[2]);
+        Assert.Contains("31.5", rows[2]);
+        Assert.StartsWith("CPU TEMP UNAVAILABLE", rows[3]);
+    }
+
+    [Fact]
     public void ExitDisablesAutoCycleAndReturnsToClock()
     {
         PageController pages = Controller(_display, new FakeShutdownExecutor());

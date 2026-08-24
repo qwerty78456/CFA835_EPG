@@ -288,14 +288,21 @@ public sealed class PageController(
 
     private static string[] RenderCpu(MetricSnapshot snapshot, ThermalOptions thermal)
     {
-        string hottest = ScreenFormatter.TemperatureValue(snapshot.HottestCpuC);
+        double? displayedTemperature = snapshot.HottestCpuC ?? snapshot.Temperatures
+            .Where(reading => reading.Celsius.HasValue && double.IsFinite(reading.Celsius.Value))
+            .Select(reading => reading.Celsius)
+            .Max();
+        bool isCpuTemperature = snapshot.HottestCpuC.HasValue;
+        string hottest = ScreenFormatter.TemperatureValue(displayedTemperature);
         double? margin = snapshot.HottestCpuC.HasValue ? thermal.TjMaxC - snapshot.HottestCpuC.Value : null;
         return
         [
             ScreenFormatter.Fit("CPU UTILIZATION"),
             ScreenFormatter.Fit($"Total{snapshot.CpuPercent,14:0.0}%"),
-            ScreenFormatter.Fit($"Hottest{hottest,13}"),
-            ScreenFormatter.Fit($"TjMax left{ScreenFormatter.TemperatureValue(margin),10}")
+            ScreenFormatter.Fit($"{(isCpuTemperature ? "Hottest" : "System")}{hottest,13}"),
+            isCpuTemperature
+                ? ScreenFormatter.Fit($"TjMax left{ScreenFormatter.TemperatureValue(margin),10}")
+                : ScreenFormatter.Fit("CPU TEMP UNAVAILABLE")
         ];
     }
 
