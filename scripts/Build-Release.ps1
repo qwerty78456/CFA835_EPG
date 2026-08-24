@@ -24,7 +24,7 @@ if ($LASTEXITCODE -ne 0) { throw 'dotnet test failed.' }
 & dotnet publish (Join-Path $repository 'src\Cfa835SystemMonitor\Cfa835SystemMonitor.csproj') -c $Configuration -r win-x64 --self-contained true --no-restore -o $publish
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
 
-Copy-Item -LiteralPath (Join-Path $repository 'README.md'), (Join-Path $repository 'THIRD-PARTY-NOTICES.md') -Destination $publish
+Copy-Item -LiteralPath (Join-Path $repository 'README.md'), (Join-Path $repository 'CHANGELOG.md'), (Join-Path $repository 'THIRD-PARTY-NOTICES.md') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $repository 'scripts\Install-Service.ps1'), (Join-Path $repository 'scripts\Update-Service.ps1'), (Join-Path $repository 'scripts\Uninstall-Service.ps1') -Destination $publish
 Set-Content -LiteralPath (Join-Path $publish 'COMMIT.txt') -Value $commit -Encoding ascii
 
