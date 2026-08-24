@@ -39,45 +39,22 @@ public sealed class DisplayTests
     }
 
     [Fact]
-    public void TemperatureKeysPaginateThreeSensorsAtATime()
+    public void MainPageShowsSingleSystemTemperature()
     {
         PageController pages = Controller(_display, new FakeShutdownExecutor());
-        DateTimeOffset now = DateTimeOffset.Parse("2026-08-17T12:00:00Z");
-        pages.HandleKey(CfaKey.Right, now);
-        pages.HandleKey(CfaKey.Right, now.AddMilliseconds(200));
         MetricSnapshot snapshot = Snapshot() with
         {
-            Temperatures = Enumerable.Range(1, 4)
-                .Select(index => new TemperatureReading("HW", $"Sensor {index}", index * 10, index == 1))
-                .ToArray()
-        };
-
-        string[] first = pages.Render(snapshot, new ThermalOptions());
-        pages.HandleKey(CfaKey.Down, now.AddMilliseconds(400));
-        string[] second = pages.Render(snapshot, new ThermalOptions());
-
-        Assert.StartsWith("TEMPS 01-03/04", first[0]);
-        Assert.StartsWith("TEMPS 04-04/04", second[0]);
-        Assert.Contains("Sensor 4", second[1]);
-    }
-
-    [Fact]
-    public void CpuPageShowsSystemFallbackWithoutClaimingCpuThermalMargin()
-    {
-        PageController pages = Controller(_display, new FakeShutdownExecutor());
-        DateTimeOffset now = DateTimeOffset.Parse("2026-08-17T12:00:00Z");
-        pages.HandleKey(CfaKey.Right, now);
-        MetricSnapshot snapshot = Snapshot() with
-        {
-            Temperatures = [new TemperatureReading("Windows ACPI", "TZ00", 31.5, false)],
+            Temperatures = [new TemperatureReading("Windows ACPI", "System", 31.5, false)],
             HottestCpuC = null
         };
 
         string[] rows = pages.Render(snapshot, new ThermalOptions());
 
-        Assert.StartsWith("System", rows[2]);
+        Assert.StartsWith("SYSTEM MONITOR", rows[0]);
+        Assert.StartsWith("2026-08-17 12:34:56", rows[1]);
+        Assert.StartsWith("TEMPERATURE", rows[2]);
         Assert.Contains("31.5", rows[2]);
-        Assert.StartsWith("CPU TEMP UNAVAILABLE", rows[3]);
+        Assert.StartsWith("AUTO: OFF", rows[3]);
     }
 
     [Fact]
@@ -99,17 +76,17 @@ public sealed class DisplayTests
         PageController pages = Controller(_display, new FakeShutdownExecutor());
         DateTimeOffset now = DateTimeOffset.Parse("2026-08-17T12:00:00Z");
 
-        for (int press = 0; press < 4; press++)
+        for (int press = 0; press < 3; press++)
         {
             pages.HandleKey(CfaKey.Right, now.AddMilliseconds(press * 200));
         }
 
         Assert.Equal(PageCategory.Shutdown, pages.Category);
 
-        pages.HandleKey(CfaKey.Right, now.AddMilliseconds(800));
+        pages.HandleKey(CfaKey.Right, now.AddMilliseconds(600));
         Assert.Equal(PageCategory.DateTime, pages.Category);
 
-        pages.HandleKey(CfaKey.Left, now.AddMilliseconds(1000));
+        pages.HandleKey(CfaKey.Left, now.AddMilliseconds(800));
         Assert.Equal(PageCategory.Shutdown, pages.Category);
     }
 
@@ -308,11 +285,11 @@ public sealed class DisplayTests
         DisplayOptions display, FakeShutdownExecutor executor, int countdownSeconds = 30) =>
         new(display, new ShutdownOptions { CountdownSeconds = countdownSeconds }, executor);
 
-    /// <summary>Presses Right four times from DateTime; returns the timestamp of the last press.</summary>
+    /// <summary>Presses Right three times from DateTime; returns the timestamp of the last press.</summary>
     private static DateTimeOffset NavigateToShutdown(PageController pages)
     {
         DateTimeOffset now = DateTimeOffset.Parse("2026-08-17T12:00:00Z");
-        for (int press = 0; press < 4; press++)
+        for (int press = 0; press < 3; press++)
         {
             pages.HandleKey(CfaKey.Right, now = press == 0 ? now : now.AddMilliseconds(200));
         }

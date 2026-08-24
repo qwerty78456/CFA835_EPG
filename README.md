@@ -1,11 +1,11 @@
 # CFA835 System Monitor
 
-A Windows system monitor for the Crystalfontz CFA835. It displays the local date/time, total CPU use, every temperature exposed by LibreHardwareMonitor, and aggregate physical-network throughput. The keypad navigates the pages and the four bi-color LEDs show power, disk, network, and CPU thermal state.
+A Windows system monitor for the Crystalfontz CFA835. It displays the local date/time, a single system temperature, total CPU use, and aggregate physical-network throughput. Temperature sampling prefers LibreHardwareMonitor/PawnIO and falls back to Windows ACPI thermal zones. The keypad navigates the pages and the four bi-color LEDs show power, disk, network, and CPU thermal state.
 
 ## Keypad
 
 - Left/right: previous or next category.
-- Up/down: temperature subpages.
+- Up/down: adjust the delay on the shutdown confirmation screen.
 - Enter: toggle five-second automatic cycling.
 - Exit: turn off automatic cycling and return to date/time.
 

@@ -163,12 +163,10 @@ public sealed class MonitorApplication
             }
 
             Console.WriteLine($"Network: Rx {snapshot.ReceiveMbps:0.00} Mbps, Tx {snapshot.TransmitMbps:0.00} Mbps");
-            Console.WriteLine($"Temperature sensors: {snapshot.Temperatures.Count}");
-            foreach (TemperatureReading sensor in snapshot.Temperatures)
-            {
-                string value = sensor.Celsius.HasValue ? $"{sensor.Celsius.Value:0.0} C" : "N/A";
-                Console.WriteLine($"  {sensor.Hardware} / {sensor.Name}: {value}");
-            }
+            TemperatureReading? temperature = snapshot.Temperatures.FirstOrDefault();
+            string temperatureValue = temperature?.Celsius is double celsius ? $"{celsius:0.0} C" : "N/A";
+            string temperatureSource = temperature is null ? string.Empty : $" ({temperature.Hardware})";
+            Console.WriteLine($"System temperature: {temperatureValue}{temperatureSource}");
 
             if (!metrics.IsPawnIoInstalled)
             {

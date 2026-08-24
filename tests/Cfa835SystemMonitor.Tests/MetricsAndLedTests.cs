@@ -92,10 +92,13 @@ public sealed class MetricsAndLedTests
             new("Windows ACPI", "TZ01", 33.5, false)
         ];
 
-        IReadOnlyList<TemperatureReading> selected = TemperatureReadingSelector.PreferReadable(primary, fallback);
+        TemperatureSelection selected = TemperatureReadingSelector.SelectSystem(primary, fallback);
 
-        Assert.Equal(2, selected.Count);
-        Assert.All(selected, reading => Assert.Equal("Windows ACPI", reading.Hardware));
+        Assert.NotNull(selected.SystemTemperature);
+        Assert.Equal("Windows ACPI", selected.SystemTemperature.Hardware);
+        Assert.Equal("System", selected.SystemTemperature.Name);
+        Assert.Equal(33.5, selected.SystemTemperature.Celsius);
+        Assert.Null(selected.HottestCpuC);
     }
 
     [Fact]
@@ -104,15 +107,36 @@ public sealed class MetricsAndLedTests
         TemperatureReading[] primary =
         [
             new("Intel CPU", "CPU Package", 51, true),
-            new("Intel CPU", "Core Max", null, true)
+            new("Intel CPU", "Core Max", null, true),
+            new("GPU", "GPU Core", 65, false)
         ];
-        TemperatureReading[] fallback = [new("Windows ACPI", "TZ00", 31.5, false)];
+        TemperatureReading[] fallback = [new("Windows ACPI", "TZ00", 90, false)];
 
-        IReadOnlyList<TemperatureReading> selected = TemperatureReadingSelector.PreferReadable(primary, fallback);
+        TemperatureSelection selected = TemperatureReadingSelector.SelectSystem(primary, fallback);
 
-        TemperatureReading reading = Assert.Single(selected);
-        Assert.Equal("CPU Package", reading.Name);
-        Assert.Equal(51, reading.Celsius);
+        Assert.NotNull(selected.SystemTemperature);
+        Assert.Equal("GPU", selected.SystemTemperature.Hardware);
+        Assert.Equal("System", selected.SystemTemperature.Name);
+        Assert.Equal(65, selected.SystemTemperature.Celsius);
+        Assert.Equal(51, selected.HottestCpuC);
+    }
+
+    [Fact]
+    public void SystemTemperatureCollapsesCoreSensorsAndExcludesDistanceToTjMax()
+    {
+        TemperatureReading[] primary =
+        [
+            new("Intel CPU", "CPU Core #1", 45, true),
+            new("Intel CPU", "CPU Core #2", 50, true),
+            new("Intel CPU", "CPU Core #2 Distance to TjMax", 70, true)
+        ];
+
+        TemperatureSelection selected = TemperatureReadingSelector.SelectSystem(primary, []);
+
+        Assert.NotNull(selected.SystemTemperature);
+        Assert.Equal("System", selected.SystemTemperature.Name);
+        Assert.Equal(50, selected.SystemTemperature.Celsius);
+        Assert.Equal(50, selected.HottestCpuC);
     }
 
     [Fact]

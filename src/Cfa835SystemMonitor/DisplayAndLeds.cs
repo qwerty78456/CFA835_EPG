@@ -6,7 +6,6 @@ public enum PageCategory
 {
     DateTime,
     Cpu,
-    Temperatures,
     Network,
     Shutdown
 }
@@ -63,8 +62,6 @@ public sealed class PageController(
 
     private readonly object _sync = new();
     private PageCategory _category = PageCategory.DateTime;
-    private int _temperaturePage;
-    private int _temperatureCount;
     private DateTimeOffset _nextAuto = DateTimeOffset.MinValue;
     private DateTimeOffset _lastKeyAt = DateTimeOffset.MinValue;
     private ShutdownUiState _shutdownState = ShutdownUiState.Idle;
@@ -74,7 +71,6 @@ public sealed class PageController(
 
     public bool AutoCycle { get; private set; } = options.AutoCycleOnStart;
     public PageCategory Category => _category;
-    public int TemperaturePage => _temperaturePage;
     public ShutdownUiState ShutdownState => _shutdownState;
     public bool ConfirmYesSelected => _confirmYes;
     public int PendingSeconds => _pendingSeconds;
@@ -132,12 +128,6 @@ public sealed class PageController(
                 break;
             case CfaKey.Right:
                 _category = Next(_category);
-                break;
-            case CfaKey.Up when _category == PageCategory.Temperatures:
-                _temperaturePage = WrapTemperaturePage(_temperaturePage - 1);
-                break;
-            case CfaKey.Down when _category == PageCategory.Temperatures:
-                _temperaturePage = WrapTemperaturePage(_temperaturePage + 1);
                 break;
             case CfaKey.Enter when _category == PageCategory.Shutdown:
                 _shutdownState = ShutdownUiState.Confirm;
@@ -235,21 +225,9 @@ public sealed class PageController(
                 return false;
             }
 
-            int pages = TemperaturePageCount();
-            if (_category == PageCategory.Temperatures && _temperaturePage + 1 < pages)
-            {
-                _temperaturePage++;
-            }
-            else
-            {
-                // Auto-cycle skips the Shutdown page (it may still advance *off* it when
-                // the user parks there with auto-cycle on); manual Left/Right reaches it.
-                _category = NextAutoCycle(_category);
-                if (_category == PageCategory.Temperatures)
-                {
-                    _temperaturePage = 0;
-                }
-            }
+            // Auto-cycle skips the Shutdown page (it may still advance *off* it when
+            // the user parks there with auto-cycle on); manual Left/Right reaches it.
+            _category = NextAutoCycle(_category);
 
             _nextAuto = now.AddSeconds(options.AutoCycleSeconds);
             return true;
@@ -260,80 +238,45 @@ public sealed class PageController(
     {
         lock (_sync)
         {
-            _temperatureCount = snapshot.Temperatures.Count;
-            _temperaturePage = Math.Min(_temperaturePage, Math.Max(0, TemperaturePageCount() - 1));
             return _shutdownState switch
             {
                 ShutdownUiState.Confirm => RenderShutdownConfirm(),
                 ShutdownUiState.CountingDown => RenderShutdownCountdown(snapshot.Timestamp),
                 _ => _category switch
                 {
-                    PageCategory.Cpu => RenderCpu(snapshot, thermal),
-                    PageCategory.Temperatures => RenderTemperatures(snapshot),
+                    PageCategory.Cpu => RenderCpu(snapshot),
                     PageCategory.Network => RenderNetwork(snapshot),
                     PageCategory.Shutdown => RenderShutdownIdle(),
-                    _ => RenderDateTime(snapshot.Timestamp)
+                    _ => RenderMain(snapshot)
                 }
             };
         }
     }
 
-    private string[] RenderDateTime(DateTimeOffset timestamp) =>
-    [
-        ScreenFormatter.Fit("DATE / TIME"),
-        ScreenFormatter.Fit(timestamp.LocalDateTime.ToString(options.DateFormat, CultureInfo.InvariantCulture)),
-        ScreenFormatter.Fit(timestamp.LocalDateTime.ToString(options.TimeFormat, CultureInfo.InvariantCulture)),
-        ScreenFormatter.Fit($"AUTO: {(AutoCycle ? "ON" : "OFF")}")
-    ];
-
-    private static string[] RenderCpu(MetricSnapshot snapshot, ThermalOptions thermal)
+    private string[] RenderMain(MetricSnapshot snapshot)
     {
-        double? displayedTemperature = snapshot.HottestCpuC ?? snapshot.Temperatures
-            .Where(reading => reading.Celsius.HasValue && double.IsFinite(reading.Celsius.Value))
-            .Select(reading => reading.Celsius)
-            .Max();
-        bool isCpuTemperature = snapshot.HottestCpuC.HasValue;
-        string hottest = ScreenFormatter.TemperatureValue(displayedTemperature);
-        double? margin = snapshot.HottestCpuC.HasValue ? thermal.TjMaxC - snapshot.HottestCpuC.Value : null;
+        DateTime local = snapshot.Timestamp.LocalDateTime;
+        double? temperature = snapshot.Temperatures.FirstOrDefault()?.Celsius;
+        return
+        [
+            ScreenFormatter.Fit("SYSTEM MONITOR"),
+            ScreenFormatter.Fit(
+                $"{local.ToString(options.DateFormat, CultureInfo.InvariantCulture)} " +
+                local.ToString(options.TimeFormat, CultureInfo.InvariantCulture)),
+            ScreenFormatter.Fit($"TEMPERATURE{ScreenFormatter.TemperatureValue(temperature),9}"),
+            ScreenFormatter.Fit($"AUTO: {(AutoCycle ? "ON" : "OFF")}")
+        ];
+    }
+
+    private static string[] RenderCpu(MetricSnapshot snapshot)
+    {
         return
         [
             ScreenFormatter.Fit("CPU UTILIZATION"),
             ScreenFormatter.Fit($"Total{snapshot.CpuPercent,14:0.0}%"),
-            ScreenFormatter.Fit($"{(isCpuTemperature ? "Hottest" : "System")}{hottest,13}"),
-            isCpuTemperature
-                ? ScreenFormatter.Fit($"TjMax left{ScreenFormatter.TemperatureValue(margin),10}")
-                : ScreenFormatter.Fit("CPU TEMP UNAVAILABLE")
-        ];
-    }
-
-    private string[] RenderTemperatures(MetricSnapshot snapshot)
-    {
-        int start = _temperaturePage * 3;
-        int end = Math.Min(start + 3, snapshot.Temperatures.Count);
-        string header = snapshot.Temperatures.Count == 0
-            ? "TEMPS 00-00/00"
-            : $"TEMPS {start + 1:00}-{end:00}/{snapshot.Temperatures.Count:00}";
-        string[] rows =
-        [
-            ScreenFormatter.Fit(header),
-            ScreenFormatter.Fit("No temperature data"),
             ScreenFormatter.Fit(string.Empty),
             ScreenFormatter.Fit(string.Empty)
         ];
-
-        for (int index = start; index < end; index++)
-        {
-            TemperatureReading sensor = snapshot.Temperatures[index];
-            string label = sensor.DisplayName;
-            if (label.Length > 14)
-            {
-                label = label[..14];
-            }
-
-            rows[(index - start) + 1] = ScreenFormatter.Fit(label.PadRight(14) + ScreenFormatter.TemperatureValue(sensor.Celsius));
-        }
-
-        return rows;
     }
 
     private string[] RenderShutdownIdle() =>
@@ -371,14 +314,6 @@ public sealed class PageController(
         ScreenFormatter.Fit($"Tx{ScreenFormatter.Rate(snapshot.TransmitMbps),18}"),
         ScreenFormatter.Fit($"Total{ScreenFormatter.Rate(snapshot.ReceiveMbps + snapshot.TransmitMbps),15}")
     ];
-
-    private int WrapTemperaturePage(int page)
-    {
-        int count = TemperaturePageCount();
-        return ((page % count) + count) % count;
-    }
-
-    private int TemperaturePageCount() => Math.Max(1, (_temperatureCount + 2) / 3);
 
     private static readonly int PageCount = Enum.GetValues<PageCategory>().Length;
 

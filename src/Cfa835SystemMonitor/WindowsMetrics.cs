@@ -48,8 +48,11 @@ public sealed class WindowsMetricSource : IMetricSource
 
             try
             {
-                _temperatureReadings = _temperatures.Poll(now);
-                _hottestCpu = CpuTemperatureSelector.Hottest(_temperatureReadings);
+                TemperatureSelection selection = _temperatures.Poll(now);
+                _temperatureReadings = selection.SystemTemperature is null
+                    ? Array.Empty<TemperatureReading>()
+                    : [selection.SystemTemperature];
+                _hottestCpu = selection.HottestCpuC;
             }
             catch (Exception exception)
             {
@@ -88,29 +91,36 @@ public static class CpuTemperatureSelector
         .Max();
 }
 
+public sealed record TemperatureSelection(
+    TemperatureReading? SystemTemperature,
+    double? HottestCpuC);
+
 public static class TemperatureReadingSelector
 {
-    public static IReadOnlyList<TemperatureReading> PreferReadable(
+    public static TemperatureSelection SelectSystem(
         IEnumerable<TemperatureReading> primary,
         IEnumerable<TemperatureReading> fallback)
     {
         TemperatureReading[] readable = primary
-            .Where(IsReadable)
-            .OrderBy(item => item.Hardware, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .Where(IsActualTemperature)
             .ToArray();
+        double? hottestCpu = CpuTemperatureSelector.Hottest(readable);
+        TemperatureReading? selected = readable.MaxBy(reading => reading.Celsius);
 
-        return readable.Length > 0
-            ? readable
-            : fallback
-                .Where(IsReadable)
-                .OrderBy(item => item.Hardware, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+        selected ??= fallback
+            .Where(IsActualTemperature)
+            .MaxBy(reading => reading.Celsius);
+
+        TemperatureReading? system = selected is null
+            ? null
+            : new TemperatureReading(selected.Hardware, "System", selected.Celsius, selected.IsCpu);
+        return new TemperatureSelection(system, hottestCpu);
     }
 
-    private static bool IsReadable(TemperatureReading reading) =>
-        reading.Celsius.HasValue && double.IsFinite(reading.Celsius.Value);
+    private static bool IsActualTemperature(TemperatureReading reading) =>
+        reading.Celsius.HasValue &&
+        double.IsFinite(reading.Celsius.Value) &&
+        !reading.Name.Contains("Distance to TjMax", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class CpuUsageSampler
@@ -451,7 +461,7 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
     private readonly ThermalZoneTemperatureSampler _thermalZones = new(logger);
     private bool _fallbackLogged;
 
-    public IReadOnlyList<TemperatureReading> Poll(DateTimeOffset now)
+    public TemperatureSelection Poll(DateTimeOffset now)
     {
         if (_computer is null || now - _openedAt >= TimeSpan.FromSeconds(60))
         {
@@ -464,17 +474,17 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
             UpdateAndCollect(hardware, readings);
         }
 
-        IReadOnlyList<TemperatureReading> selected = TemperatureReadingSelector.PreferReadable(
+        TemperatureSelection selection = TemperatureReadingSelector.SelectSystem(
             readings,
             _thermalZones.Sample());
-        if (!_fallbackLogged && selected.Count > 0 && selected.All(reading => reading.Hardware == "Windows ACPI"))
+        if (!_fallbackLogged && selection.SystemTemperature?.Hardware == "Windows ACPI")
         {
             logger.LogWarning(
                 "LibreHardwareMonitor returned no readable temperatures; using Windows ACPI thermal-zone fallback");
             _fallbackLogged = true;
         }
 
-        return selected;
+        return selection;
     }
 
     private void Reopen(DateTimeOffset now)
