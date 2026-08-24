@@ -5,7 +5,6 @@ namespace Cfa835SystemMonitor;
 public enum PageCategory
 {
     DateTime,
-    Cpu,
     Network,
     Shutdown
 }
@@ -244,7 +243,6 @@ public sealed class PageController(
                 ShutdownUiState.CountingDown => RenderShutdownCountdown(snapshot.Timestamp),
                 _ => _category switch
                 {
-                    PageCategory.Cpu => RenderCpu(snapshot),
                     PageCategory.Network => RenderNetwork(snapshot),
                     PageCategory.Shutdown => RenderShutdownIdle(),
                     _ => RenderMain(snapshot)
@@ -265,17 +263,6 @@ public sealed class PageController(
             ScreenFormatter.Fit($"CPU UTIL{snapshot.CpuPercent,11:0.0}%"),
             ScreenFormatter.Fit($"TEMPERATURE{ScreenFormatter.TemperatureValue(temperature),9}"),
             ScreenFormatter.Fit($"AUTO: {(AutoCycle ? "ON" : "OFF")}")
-        ];
-    }
-
-    private static string[] RenderCpu(MetricSnapshot snapshot)
-    {
-        return
-        [
-            ScreenFormatter.Fit("CPU UTILIZATION"),
-            ScreenFormatter.Fit($"Total{snapshot.CpuPercent,14:0.0}%"),
-            ScreenFormatter.Fit(string.Empty),
-            ScreenFormatter.Fit(string.Empty)
         ];
     }
 

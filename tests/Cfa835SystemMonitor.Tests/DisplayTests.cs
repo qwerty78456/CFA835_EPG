@@ -39,7 +39,7 @@ public sealed class DisplayTests
     }
 
     [Fact]
-    public void MainPageShowsSingleSystemTemperature()
+    public void MainPageShowsCpuAndSingleSystemTemperature()
     {
         PageController pages = Controller(_display, new FakeShutdownExecutor());
         MetricSnapshot snapshot = Snapshot() with
@@ -77,7 +77,7 @@ public sealed class DisplayTests
         PageController pages = Controller(_display, new FakeShutdownExecutor());
         DateTimeOffset now = DateTimeOffset.Parse("2026-08-17T12:00:00Z");
 
-        for (int press = 0; press < 3; press++)
+        for (int press = 0; press < 2; press++)
         {
             pages.HandleKey(CfaKey.Right, now.AddMilliseconds(press * 200));
         }
@@ -110,9 +110,9 @@ public sealed class DisplayTests
         }
 
         Assert.DoesNotContain(PageCategory.Shutdown, visited);
-        Assert.Contains(PageCategory.Cpu, visited);
         Assert.Contains(PageCategory.Network, visited);
         Assert.Contains(PageCategory.DateTime, visited);
+        Assert.Equal(2, visited.Distinct().Count());
     }
 
     [Fact]
@@ -286,11 +286,11 @@ public sealed class DisplayTests
         DisplayOptions display, FakeShutdownExecutor executor, int countdownSeconds = 30) =>
         new(display, new ShutdownOptions { CountdownSeconds = countdownSeconds }, executor);
 
-    /// <summary>Presses Right three times from DateTime; returns the timestamp of the last press.</summary>
+    /// <summary>Presses Right twice from DateTime; returns the timestamp of the last press.</summary>
     private static DateTimeOffset NavigateToShutdown(PageController pages)
     {
         DateTimeOffset now = DateTimeOffset.Parse("2026-08-17T12:00:00Z");
-        for (int press = 0; press < 3; press++)
+        for (int press = 0; press < 2; press++)
         {
             pages.HandleKey(CfaKey.Right, now = press == 0 ? now : now.AddMilliseconds(200));
         }

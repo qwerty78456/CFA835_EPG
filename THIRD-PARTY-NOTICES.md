@@ -7,4 +7,4 @@ This application uses the following packages. Their licenses remain with their r
 - System.IO.Ports — MIT License: https://github.com/dotnet/runtime
 - xUnit.net test packages — Apache License 2.0: https://github.com/xunit/xunit
 
-PawnIO and NSSM are installed separately and are not redistributed in the application release archive.
+PawnIO and NSSM are installed separately and are not redistributed in the application release directory.

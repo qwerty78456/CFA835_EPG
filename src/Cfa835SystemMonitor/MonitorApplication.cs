@@ -141,6 +141,12 @@ public sealed class MonitorApplication
                 _loggerFactory.CreateLogger<Cfa835Device>());
             string version = await device.OpenAsync(port, enableKeyReports: false, cancellationToken).ConfigureAwait(false);
             Console.WriteLine($"Display: {version} on {port}");
+            string[] rows = await device.ReadRowsAsync(cancellationToken).ConfigureAwait(false);
+            Console.WriteLine("Display rows:");
+            for (int row = 0; row < rows.Length; row++)
+            {
+                Console.WriteLine($"  {row + 1}: |{rows[row]}|");
+            }
         }
         catch (Exception exception)
         {

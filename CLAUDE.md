@@ -4,18 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository layout
 
-This directory contains two sibling folders, not one project root:
+The common workstation layout contains two sibling folders, not one project root:
 
 - `Cfa835SystemMonitor-640d1d649e28-source/` — the actual C# solution. All development happens here.
-- `Cfa835SystemMonitor-640d1d649e28-win-x64/` — a pre-built, self-contained `win-x64` publish output of that same source (commit `640d1d649e28`, see `COMMIT.txt`). Treat it as a build artifact, not source; don't hand-edit files in it.
+- `Cfa835SystemMonitor-640d1d649e28-win-x64/` — a storage root for immutable, timestamped, self-contained `win-x64` release folders. Treat every release as an artifact, not source; do not hand-edit it.
 
-There is no git repository at the top level, but `Cfa835SystemMonitor-640d1d649e28-source/` is its own git repo (`origin` → `https://github.com/qwerty78456/CFA835_EPG.git`, branch `main`). The `Cfa835SystemMonitor-640d1d649e28-win-x64/` publish output is pinned to an older commit (`640d1d649e28`, see `COMMIT.txt`) and does not reflect the current source tree — don't assume the two are in sync.
+There is no git repository at the top level, but `Cfa835SystemMonitor-640d1d649e28-source/` is its own git repo (`origin` → `https://github.com/qwerty78456/CFA835_EPG.git`, branch `main`). Never assume a running process matches the source checkout or newest release directory: resolve its executable path and embedded ProductVersion.
 
 All commands below assume the working directory is `Cfa835SystemMonitor-640d1d649e28-source/`.
 
 ## What this project is
 
-A Windows-only .NET 10 service/console app that drives a Crystalfontz CFA835 USB LCD+keypad+LED module as a system monitor: date/time, total CPU%, every LibreHardwareMonitor temperature sensor, and aggregate physical-NIC throughput on a 4-line/20-column text display, with 4 bi-color LEDs for power/disk/network/CPU-thermal state. The keypad cycles pages, plus a manually-reachable Shutdown page that confirms, lets you adjust the countdown, and then shells out to `shutdown.exe`.
+A Windows-only .NET 10 service/console app that drives a Crystalfontz CFA835 USB LCD+keypad+LED module. The main 4-line/20-column screen shows date/time, total CPU utilization, one selected system temperature, and auto-cycle state. The only other metric page is aggregate physical-NIC throughput. A manually reachable Shutdown page confirms, adjusts the countdown, and shells out to `shutdown.exe`. The four bi-color LEDs show power, disk, network, and CPU thermal state.
 
 ## Commands
 
@@ -29,7 +29,7 @@ dotnet test .\Cfa835SystemMonitor.slnx -c Release --no-restore
 # Run a single test (xunit, by fully-qualified name or filter expression)
 dotnet test .\Cfa835SystemMonitor.slnx --no-restore --filter "FullyQualifiedName~ProtocolTests.ParserResynchronizesAfterNoiseAndBadCrc"
 
-# Full release build: restore --locked-mode, test, publish win-x64 self-contained, zip artifacts + SHA256SUMS
+# Full release build: locked restore, tests, and an uncompressed timestamped win-x64 folder + per-file SHA256SUMS
 .\scripts\Build-Release.ps1
 ```
 
@@ -73,6 +73,7 @@ Key design points:
 - **`RunAsync` owns a reconnect loop.** Each iteration creates a fresh `SerialCfaTransport` + `Cfa835Device` and reconnects with exponential backoff (1s → 30s cap) on any failure, so the outer loop — not individual methods — is where device-loss resilience lives.
 - **Two sampling cadences run independently in the same tick.** `WindowsMetricSource.Sample` refreshes CPU%/temperatures only every `sampling.temperatureMs` (LibreHardwareMonitor sensor polling is comparatively expensive), while disk/network are sampled every call. The display itself repaints on the `sampling.displayMs` cadence or immediately when `forceRender` is set (keypad input, page auto-advance). The activity loop tick rate is `sampling.activityMs`.
 - **`ScreenWriter` only writes rows that changed** (byte-for-byte diff against the last-written row) to minimize serial traffic; `PageController.Render` is otherwise stateless per call.
+- **Display categories are Main, Network, and Shutdown.** CPU utilization and the selected system temperature exist only on Main. There are no standalone CPU or temperature pages. Auto-cycle alternates Main/Network and skips Shutdown; manual Left/Right navigation reaches all three.
 - **`IMetricSource` is the seam for `--simulate`.** `SimulationMetricSource` wraps a real `WindowsMetricSource` and overrides only the fields a scenario cares about (see `DisplayAndLeds.cs`), leaving everything else pass-through — this is also the pattern to follow for injecting fakes in tests.
 - **CFA835 packet framing**: `CfaPacket.Type` packs class into its top 2 bits (`0x00` command from host, `0x40` ACK, `0x80` unsolicited report, `0xC0` NAK/error) and command code into the low 6 bits. `CfaPacketParser.Feed` is a resynchronizing byte-stream parser — on CRC mismatch it doesn't just drop one packet, it scans forward for the next byte offset that yields a valid CRC, so partial/corrupt reads self-heal without disconnecting.
 - **`SerialCfaTransport.SendCommandAsync`** serializes all commands through a single semaphore (one in-flight command at a time), retries up to 3 times on a 750ms timeout, and correlates responses to the pending command purely by matching command code + packet class (no sequence numbers in this protocol).
@@ -80,7 +81,8 @@ Key design points:
 - **Registry-based device discovery**: `CfaDeviceLocator` looks up `HKLM\SYSTEM\CurrentControlSet\Enum\USB\VID_xxxx&PID_xxxx\<serial>\Device Parameters\PortName`, filtered by configured serial, falling back to `device.fallbackPort` if no match is present in `SerialPort.GetPortNames()`.
 - **Configuration** (`appsettings.json`) is loaded from `%ProgramData%\Cfa835SystemMonitor\appsettings.json` when installed as a service, else `AppContext.BaseDirectory`, else `--config <path>`; every options group self-validates range/format on load and throws `InvalidDataException` (mapped to exit code 78) on bad values.
 - **The Shutdown page is opt-in only.** `PageController` excludes `PageCategory.Shutdown` from auto-cycling — it's reachable only by manually paging to it — and its state machine (`Idle → Confirm → CountingDown`) lets Left/Right adjust the countdown (`ShutdownOptions.MinCountdownSeconds`/`MaxCountdownSeconds`) before Enter commits to `IShutdownExecutor.RequestShutdown`; any key during the countdown calls `Abort()` (`shutdown /a`).
-- **`--diagnose` and `--hardware-test` are read-only/restore-on-exit by design** — `--diagnose` never touches display/LED/keymask state; `--hardware-test` snapshots keymasks/rows/LEDs before running and restores them in a `finally`, even on timeout.
+- **`--diagnose` and `--hardware-test` are read-only/restore-on-exit by design** — `--diagnose` reads and prints display RAM but never writes display/LED/keymask state; `--hardware-test` snapshots keymasks/rows/LEDs before running and restores them in a `finally`, even on timeout.
+- **A release is not deployed until the live process is verified.** Releases are uncompressed timestamped folders containing `COMMIT.txt`, `BUILD-TIMESTAMP.txt`, and `SHA256SUMS.txt`. After switching builds, resolve the live process path/ProductVersion and complete the physical-screen sequence in `DEPLOYMENT.md`; never restart the previous build after validating the new one.
 - Native interop (P/Invoke) is used directly for CPU times (`kernel32!GetSystemTimes`), disk throughput (`pdh.dll`), and NIC stats (`iphlpapi!GetIfTable2`) rather than going through WMI/PerformanceCounter, for lower overhead in the tight polling loop.
 
 ### Tests
@@ -92,3 +94,5 @@ Key design points:
 1. Crystalfontz CFA735/835 USB virtual-COM driver.
 2. Signed normal-edition PawnIO 2.2.0 (temperature sensor access via LibreHardwareMonitor).
 3. NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe` for the Windows service scripts (`scripts/Install-Service.ps1`, `Update-Service.ps1`, `Uninstall-Service.ps1`).
+
+See `DEPLOYMENT.md` for artifact validation, foreground and service installation, update/rollback, remote Windows building, live-process verification, and physical CFA835 acceptance.
