@@ -199,6 +199,82 @@ public sealed class GraphicRenderingTests
         Assert.Single(widths.Distinct());
     }
 
+    [Theory]
+    [InlineData(96f)]
+    [InlineData(72f)]   // regression: what image exporters most often tag
+    [InlineData(300f)]
+    public void BackgroundLoadsPixelForPixelWhateverDpiTheFileClaims(float dpi)
+    {
+        // DrawImageUnscaled draws at the image's *physical* size despite its name, so a 244x68 PNG
+        // tagged 72 DPI was blown up to 325x91 on a 96 DPI surface and spilled off the bottom-right.
+        string path = Path.Combine(Path.GetTempPath(), $"cfa835-bg-{dpi}-{Guid.NewGuid():N}.png");
+        try
+        {
+            using (System.Drawing.Bitmap source =
+                new(GrayscaleImage.Width, GrayscaleImage.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            {
+                source.SetResolution(dpi, dpi);
+                for (int y = 0; y < GrayscaleImage.Height; y++)
+                {
+                    for (int x = 0; x < GrayscaleImage.Width; x++)
+                    {
+                        source.SetPixel(x, y, System.Drawing.Color.Black);
+                    }
+                }
+
+                // Corner markers: any scaling shifts or clips at least one of them.
+                source.SetPixel(0, 0, System.Drawing.Color.White);
+                source.SetPixel(GrayscaleImage.Width - 1, GrayscaleImage.Height - 1, System.Drawing.Color.White);
+                source.SetPixel(GrayscaleImage.Width - 1, 0, System.Drawing.Color.White);
+                source.SetPixel(0, GrayscaleImage.Height - 1, System.Drawing.Color.White);
+                source.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            byte[] frame = GrayscaleImage.Load(path, invert: false);
+
+            Assert.Equal(GrayscaleImage.Width * GrayscaleImage.Height, frame.Length);
+            foreach ((int x, int y) in new[]
+                     {
+                         (0, 0),
+                         (GrayscaleImage.Width - 1, 0),
+                         (0, GrayscaleImage.Height - 1),
+                         (GrayscaleImage.Width - 1, GrayscaleImage.Height - 1)
+                     })
+            {
+                Assert.True(
+                    frame[(y * GrayscaleImage.Width) + x] > 0x80,
+                    $"corner ({x}, {y}) should be white at {dpi} DPI but was {frame[(y * GrayscaleImage.Width) + x]}");
+            }
+
+            // Exactly the four corners are lit; nothing was smeared by resampling.
+            Assert.Equal(4, frame.Count(pixel => pixel > 0x80));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void BackgroundOfTheWrongPixelSizeIsRejected()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"cfa835-bg-bad-{Guid.NewGuid():N}.png");
+        try
+        {
+            using (System.Drawing.Bitmap source = new(GrayscaleImage.Width, GrayscaleImage.Height - 1))
+            {
+                source.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            InvalidDataException error = Assert.Throws<InvalidDataException>(() => GrayscaleImage.Load(path, false));
+            Assert.Contains("244x68", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static int FirstInkColumn(FieldUpdate update, int width)
     {
         for (int column = 0; column < width; column++)

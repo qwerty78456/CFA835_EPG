@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Globalization;
@@ -56,7 +57,18 @@ public static class GrayscaleImage
         using (Graphics graphics = Graphics.FromImage(normalized))
         {
             graphics.Clear(Color.Black);
-            graphics.DrawImageUnscaled(source, 0, 0);
+
+            // Both rectangles are given explicitly in GraphicsUnit.Pixel so the copy is 1:1 whatever
+            // DPI the file claims. DrawImageUnscaled would not do this: despite the name it draws at
+            // the image's *physical* size, so a 244x68 PNG tagged 72 DPI lands as 325x91 on a 96 DPI
+            // surface and spills off the bottom-right. Exporters commonly tag 72 DPI.
+            graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+            graphics.PixelOffsetMode = PixelOffsetMode.Half;
+            graphics.DrawImage(
+                source,
+                new Rectangle(0, 0, Width, Height),
+                new Rectangle(0, 0, Width, Height),
+                GraphicsUnit.Pixel);
         }
 
         byte[] frame = new byte[Width * Height];

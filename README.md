@@ -38,7 +38,7 @@ Setting `"display": { "mode": "graphic" }` in `appsettings.json` switches to com
 }
 ```
 
-- **Background**: an optional PNG per page, which must be exactly 244x68. It is decoded once at start-up and composited with the text on the host, so a field can sit on any artwork. The panel resolves 16 greyscale levels, so artwork should not depend on fine tonal gradients; `invertBackground` flips the whole page if the panel reads inverted.
+- **Background**: an optional PNG per page, which must be exactly 244x68 pixels. Any DPI tag in the file is ignored; the copy is pixel-for-pixel. It is decoded once at start-up and composited with the text on the host, so a field can sit on any artwork. The panel resolves 16 greyscale levels, so artwork should not depend on fine tonal gradients; `invertBackground` flips the whole page if the panel reads inverted.
 - **Fields**: `x`, `y`, `width`, and `height` are pixels with the origin at the top-left. `shade` (0-255) sets the text greyscale, so dark text on light artwork is simply a low value. Available `source` values are `literal`, `datetime`, `cpu.utilization`, `cpu.temperature`, `system.temperature`, `net.rx`, `net.tx`, `net.total`, `autocycle`, `shutdown.pendingSeconds`, `shutdown.remaining`, and `shutdown.confirm`. `fallback` supplies the text when a sensor is unreadable.
 - **Fonts** are resolved from the system in `fontFamilies` order; the first installed family wins. Only printable ASCII is rasterized.
 - **Pages** are data. Adding an entry to `pages` adds a page to the keypad ring. `"kind": "shutdown"` keeps a page out of auto-cycling and gives it the Idle/Confirm/CountingDown state machine; leaving its `fields` empty keeps the built-in wording.
@@ -48,6 +48,12 @@ Tune a layout without any hardware attached:
 
 ```powershell
 .\Cfa835SystemMonitor.exe --layout-preview preview.png --preview-page DateTime --preview-scale 6
+```
+
+On a machine without PawnIO, `cpu.temperature` previews as `N/A`, which hides whether a real reading fits its box. Add `--simulate` to fill the sensor fields with realistic values:
+
+```powershell
+.\Cfa835SystemMonitor.exe --layout-preview preview.png --simulate thermal-90
 ```
 
 ## Keypad

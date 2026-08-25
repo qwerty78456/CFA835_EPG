@@ -280,9 +280,10 @@ public sealed record CommandLineOptions(
             }
         }
 
-        if (simulation is not null && mode != AppMode.Monitor)
+        if (simulation is not null && mode is not (AppMode.Monitor or AppMode.LayoutPreview))
         {
-            throw new ArgumentException("--simulate is supported only in normal interactive monitor mode.");
+            throw new ArgumentException(
+                "--simulate is supported only in normal interactive monitor mode or with --layout-preview.");
         }
 
         if ((previewPage is not null || previewPath is not null) && mode != AppMode.LayoutPreview)
@@ -301,6 +302,7 @@ public sealed record CommandLineOptions(
           --config <path>            Use an alternate appsettings.json
           --simulate <scenario>      thermal-89|thermal-90|thermal-92|disk|network-rx|network-tx|network-both
           --layout-preview [file]    Render the graphic layout to a PNG; no CFA835 required
+                                     (accepts --simulate to preview realistic sensor values)
           --preview-page <id>        Layout page to preview (default: the first page)
           --preview-scale <1-16>     Pixel magnification of the preview PNG (default: 4)
         """;

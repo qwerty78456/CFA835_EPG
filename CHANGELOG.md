@@ -2,6 +2,18 @@
 
 All notable changes are recorded here in reverse chronological order. Dates use the builder's local calendar date; `COMMIT.txt` in each release folder is the authoritative source revision.
 
+## 2026-08-25 — Background DPI fix
+
+### Fixed
+
+- Fixed background artwork being scaled up and clipped. `GrayscaleImage.Load` used `Graphics.DrawImageUnscaled`, which despite its name draws at the image's *physical* size rather than its pixel size. A 244x68 PNG tagged 72 DPI — what most exporters emit — was therefore drawn at 325x91 on the 96 DPI compositing surface, anchored top-left, so roughly the bottom and right thirds fell outside the frame. The pixel-size validation passed because the file genuinely was 244x68. Loading now specifies source and destination rectangles explicitly in `GraphicsUnit.Pixel` with nearest-neighbour interpolation, which is DPI-independent.
+
+### Added
+
+- Allowed `--simulate` alongside `--layout-preview`. On a workstation without PawnIO, `cpu.temperature` previews as `N/A`, which hides whether a real reading fits its box; `--layout-preview preview.png --simulate thermal-90` renders `90C` instead.
+- Added command-line parsing tests covering the preview flags, their range checks, and which modes accept `--simulate`.
+- Added background-loading tests that assert a pixel-for-pixel copy at 72, 96, and 300 DPI, and that a file of the wrong pixel size is still rejected.
+
 ## 2026-08-25 — Updated documentation
 
 Documentation-only pass over every file in the repository. No behavior changed.

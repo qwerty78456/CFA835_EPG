@@ -114,13 +114,15 @@ Keep secrets out of this file; the current schema contains no secret-bearing set
 Deploying a graphic layout:
 
 1. Copy `layout.json` from the release folder to `C:\ProgramData\Cfa835SystemMonitor\` and edit it there.
-2. Export the artwork as a PNG that is **exactly 244x68 pixels**, place it in the same directory, and reference it from the page with `"background": "background.png"`. Any other size is rejected at start-up.
+2. Export the artwork as a PNG that is **exactly 244x68 pixels**, place it in the same directory, and reference it from the page with `"background": "background.png"`. Any other pixel size is rejected at start-up. The DPI tag in the file does not matter — the copy is pixel-for-pixel — so a 72 DPI export from a design tool is fine.
 3. Set the text `shade` to suit the artwork. `248` is white text for dark artwork; use a low value such as `8` for dark text on light artwork. If the whole panel reads inverted, set `"invertBackground": true` rather than re-exporting the image.
 4. Position the boxes with no hardware attached, iterating until the PNG looks right:
 
    ```powershell
    .\Cfa835SystemMonitor.exe --config C:\ProgramData\Cfa835SystemMonitor\appsettings.json --layout-preview preview.png --preview-scale 6
    ```
+
+   On a build workstation without PawnIO, `cpu.temperature` previews as `N/A` and will not show whether a real reading fits its box. Append `--simulate thermal-90` to render a realistic value instead. This matters when the workstation and the monitored machine differ: temperature access needs PawnIO on both AMD and Intel, so a workstation lacking the driver tells you nothing about the sensor, only about the layout.
 
 5. Confirm the parsed layout, then check alignment on the physical panel:
 
@@ -338,10 +340,11 @@ After transfer, re-run section 3 on the monitored machine. Network transfer succ
 
 ### Temperature is `N/A`
 
-- Confirm PawnIO normal edition is installed and readable by the process identity.
+- Confirm PawnIO normal edition is installed and readable by the process identity. `PawnIO installed: False` in the log is the usual answer on its own: without ring-0 access LibreHardwareMonitor cannot read CPU temperatures on **either** AMD or Intel, so a CPU-vendor difference between the build workstation and the monitored machine is not the explanation.
 - Run `--diagnose` with the monitor stopped.
-- Check whether the diagnostic initialized Windows ACPI counters as fallback.
 - Review stdout/stderr logs for LibreHardwareMonitor inventory or access errors.
+- **The Windows ACPI thermal-zone fallback does not feed a `cpu.temperature` field.** `Windows ACPI thermal-zone fallback initialized with N counter(s)` only means the counters opened. Those readings carry `IsCpu = false` and are consulted solely for the text-mode `TEMPERATURE` row and the `system.temperature` layout source; `cpu.temperature` and the thermal-warning LED come from LibreHardwareMonitor CPU sensors only. A machine with a working ACPI zone but no PawnIO therefore shows a system temperature and `N/A` for CPU temperature, which is correct behaviour, not a fault.
+- ACPI thermal zones are largely a laptop and OEM feature. Many desktop boards expose either no zone or a near-ambient stub — a value such as 16 C from `\_tz.tz10` is the firmware reporting a placeholder, not a misread. Use `Get-Counter '\Thermal Zone Information(*)\Temperature'` to see the raw Kelvin values.
 
 ### Temperature appears implausible
 

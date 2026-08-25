@@ -221,7 +221,14 @@ public sealed class MonitorApplication
         MetricSnapshot snapshot;
         try
         {
-            using WindowsMetricSource metrics = new(_options, _loggerFactory);
+            IMetricSource live = new WindowsMetricSource(_options, _loggerFactory);
+            // --simulate is accepted here so a layout can be checked against realistic values on a
+            // workstation that has no PawnIO driver, where cpu.temperature would otherwise be "N/A"
+            // and hide whether a real reading fits its box.
+            using IMetricSource metrics = commandLine.Simulation is null
+                ? live
+                : new SimulationMetricSource(live, commandLine.Simulation);
+
             // CPU% and the PDH-based counters are deltas, so a single sample would preview as 0.
             _ = metrics.Sample(DateTimeOffset.Now);
             await Task.Delay(Math.Max(1000, _options.Sampling.TemperatureMs), cancellationToken).ConfigureAwait(false);
