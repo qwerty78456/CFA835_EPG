@@ -30,8 +30,14 @@ Install these before launching the application:
 2. The Crystalfontz USB virtual-COM driver for CFA735/CFA835 devices.
 3. Signed normal-edition PawnIO 2.2.0. LibreHardwareMonitor uses PawnIO for primary low-level temperature access.
 4. For service mode only, NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe`, or pass an alternate `-NssmPath`.
+5. For graphic mode only, the font families named in `layout.fontFamilies`. The default chain is `Bahnschrift SemiLight` then `Times New Roman`, both of which ship with Windows 10 and later. Verify before deployment rather than discovering a silent fallback on the panel:
 
-The release is self-contained; the monitored machine does not need the .NET SDK or runtime.
+   ```powershell
+   Add-Type -AssemblyName System.Drawing
+   (New-Object System.Drawing.Text.InstalledFontCollection).Families.Name -contains 'Bahnschrift SemiLight'
+   ```
+
+The release is self-contained; the monitored machine does not need the .NET SDK or runtime. Graphic mode uses GDI+, which is an operating-system component, so it adds no install step of its own.
 
 Confirm the device appears before deployment:
 
@@ -174,7 +180,15 @@ A passing diagnostic must report all of the following:
 - selected system temperature and its source, or a clearly reported `N/A` when no sensor path is readable;
 - `Diagnostics completed.` and exit code 0.
 
-Diagnostic mode deliberately does not repaint the LCD. To prove what the live build rendered, let the monitor reach Main, stop it, immediately run `--diagnose`, and inspect the four `Display rows` values before restarting the same new build. Use the full live-monitor acceptance procedure in section 10 to verify navigation too.
+When `display.mode` is `graphic`, or whenever a `layout.json` is present, the diagnostic additionally prints the resolved mode and every page, background path, and field rectangle. Use that to confirm the process is reading the layout you intend before looking at the panel.
+
+Diagnostic mode deliberately does not repaint the LCD. To prove what the live build rendered, let the monitor reach Main, stop it, immediately run `--diagnose`, and inspect the four `Display rows` values before restarting the same new build. Note that `Display rows` reads back only text written by command 31; in graphic mode the CFA835 cannot report its graphic buffer, so use `--layout-preview` for expected output and the panel itself for actual output. Use the full live-monitor acceptance procedure in section 10 to verify navigation too.
+
+`--layout-preview` never opens the COM port, so unlike `--diagnose` it does not require stopping the monitor. It does briefly sample metrics through LibreHardwareMonitor to fill the fields, so run it during a quiet moment if the machine is under sensor-polling load, or accept an empty snapshot in the image:
+
+```powershell
+.\Cfa835SystemMonitor.exe --config C:\ProgramData\Cfa835SystemMonitor\appsettings.json --layout-preview preview.png --preview-scale 6
+```
 
 ## 7. Foreground deployment
 
@@ -235,7 +249,9 @@ $newRelease = 'E:\path\to\Cfa835SystemMonitor-<new-commit>-win-x64-<timestamp>'
 & (Join-Path $newRelease 'Update-Service.ps1') -RuntimePath $newRelease
 ```
 
-`Update-Service.ps1` stops the service, copies the new runtime while preserving the ProgramData configuration and shipped `appsettings.json`, then restarts the service.
+`Update-Service.ps1` stops the service, copies the new runtime while preserving the ProgramData configuration and the shipped `appsettings.json` and `layout.json`, then restarts the service.
+
+Operator-edited files under `C:\ProgramData\Cfa835SystemMonitor\` — `appsettings.json`, `layout.json`, and any background artwork — are never overwritten by an upgrade or a rollback. `Install-Service.ps1` seeds `layout.json` there only when the file is absent. A rollback to a build that predates graphic mode therefore leaves the layout in place, harmless because that build ignores it; a rollback with `display.mode` still set to `graphic` will fail on the older binary, so revert `display.mode` to `text` in the same step.
 
 Rollback uses the same command with the previously validated release folder:
 
@@ -260,6 +276,17 @@ This is the authoritative check that a deployment manifested on hardware.
 8. On Main, press Enter. Verify auto-cycle changes to `AUTO: ON` and alternates only between Main and Network.
 9. Press Exit. Verify the display returns to Main and shows `AUTO: OFF`.
 10. Leave the intended new process running and re-check its PID/path after at least one complete auto-cycle interval.
+
+### 10.1 Additional steps when `display.mode` is `graphic`
+
+Steps 4 and 5 above describe the text screen. When graphic mode is deployed, replace them with:
+
+1. Verify the background artwork is drawn once and does not flicker or tear as fields update.
+2. Verify each value sits inside its intended box and does not overrun it. If a value is clipped, widen the field rectangle in `layout.json` rather than shrinking `sizePx` first — the rectangle is also the transfer unit.
+3. Watch the seconds digits for at least one minute. They must not shift horizontally; digits are rendered with a shared tabular advance, so any jitter indicates the wrong font resolved.
+4. Confirm the resolved font in the startup log line `Glyph atlas ready: font '<name>'`. A fallback to generic sans-serif means the families in `layout.fontFamilies` are not installed on this machine.
+5. Leave the monitor running for longer than `fullRepaintSeconds` and confirm the periodic full repaint is not visible as a flash.
+6. Page through every entry in `layout.pages`, then reach the shutdown page manually and confirm auto-cycle never lands on it.
 
 For a foreground process, verify the live binary from an elevated shell:
 
@@ -322,6 +349,24 @@ After transfer, re-run section 3 on the monitored machine. Network transfer succ
 - LibreHardwareMonitor/PawnIO chooses the hottest valid absolute temperature across hardware; some motherboard controllers expose poorly labelled channels.
 - `Distance to TjMax` is excluded, but firmware/sensor labels may still require machine-specific interpretation.
 
+### Graphic mode exits immediately with code 78
+
+- The layout failed validation. The message names the page and field index, for example `layout page 'DateTime' field 2: rectangle (200, 4, 100, 18) does not fit the 244x68 display.`
+- Check that the layout being read is the one you edited. A service reads `C:\ProgramData\Cfa835SystemMonitor\layout.json`, not the copy beside the executable.
+- Confirm the background PNG exists at the resolved path and is exactly 244x68.
+
+### Graphic screen is blank, inverted, or unreadable
+
+- Run `--layout-preview` first. If the PNG looks correct, the layout is fine and the problem is shade polarity on the panel, not composition.
+- Text invisible against artwork usually means `shade` matches the background. Use a low `shade` for light artwork and a high one for dark artwork.
+- If the entire page reads inverted, set `"invertBackground": true` instead of re-exporting the image.
+- The panel resolves 16 greyscale levels, so artwork relying on subtle tonal steps will band. Prefer flat fills and line art.
+
+### Text is missing spaces or shows `?` characters
+
+- Only printable ASCII (`0x20`-`0x7E`) is rasterized; anything else is drawn as `?`. This applies to accented characters, including Vietnamese diacritics.
+- Missing spaces in a released binary older than this change indicate the pre-fix glyph advance bug; upgrade rather than editing the layout around it.
+
 ### Service repeatedly restarts
 
 - Inspect ProgramData logs and NSSM service parameters.
@@ -337,4 +382,4 @@ From an elevated release-directory PowerShell prompt:
 .\Uninstall-Service.ps1
 ```
 
-Add `-RemoveFiles` only when intentionally removing `C:\Program Files\Cfa835SystemMonitor`. PawnIO, configuration, and logs under ProgramData are preserved by design.
+Add `-RemoveFiles` only when intentionally removing `C:\Program Files\Cfa835SystemMonitor`. PawnIO, configuration, and logs under ProgramData are preserved by design; that includes `layout.json` and any background artwork, so a later reinstall keeps the tuned layout.

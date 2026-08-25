@@ -2,11 +2,13 @@
 
 A Windows-only system monitor for the Crystalfontz CFA835 USB LCD/keypad/LED module. The main 20x4 screen shows local date/time, total CPU utilization, one selected system temperature, and auto-cycle state. A second page shows aggregate physical-network throughput. A manually reached shutdown page provides confirmation, an adjustable countdown, and cancellation.
 
-Temperature sampling prefers the hottest valid LibreHardwareMonitor/PawnIO reading and falls back to the hottest Windows ACPI thermal zone when no primary reading is available. CPU-only temperature selection remains separate for the thermal-warning LED.
+The module is really a 244x68-pixel, 16-shade greyscale panel with the 20x4 character API layered on top. `display.mode` chooses which layer the app drives: `text` (the default, described immediately below) or `graphic` (background artwork plus text boxes placed by pixel coordinate, described under [Graphic mode](#graphic-mode)).
+
+Temperature sampling prefers the hottest valid LibreHardwareMonitor/PawnIO reading and falls back to the hottest Windows ACPI thermal zone when no primary reading is available. CPU-only temperature selection remains separate for the thermal-warning LED. A CPU sensor reporting 0 C or below is treated as unreadable rather than as a real reading, because LibreHardwareMonitor still enumerates CPU sensors when PawnIO is absent.
 
 ## Display pages
 
-The page order is deliberately small:
+The page order in text mode is deliberately small:
 
 1. Main: date/time, `CPU UTIL`, `TEMPERATURE`, and `AUTO` state.
 2. Network: receive, transmit, and total Mbps.
@@ -16,7 +18,7 @@ There are no separate CPU or temperature pages. Auto-cycle alternates between Ma
 
 ## Graphic mode
 
-The CFA835 is a 244x68 monochrome/greyscale graphic panel; the 20x4 character API is one layer on top of it. Setting `"display": { "mode": "graphic" }` in `appsettings.json` switches to composited frames driven by `layout.json`, which lives beside `appsettings.json`.
+Setting `"display": { "mode": "graphic" }` in `appsettings.json` switches to composited frames driven by `layout.json`, which lives beside `appsettings.json`. Background artwork and text are combined on the host, so the module only ever receives finished pixel rectangles — no microSD card, on-device image, or CFA835 font file is involved.
 
 ```jsonc
 {
@@ -36,7 +38,7 @@ The CFA835 is a 244x68 monochrome/greyscale graphic panel; the 20x4 character AP
 }
 ```
 
-- **Background**: an optional PNG per page, which must be exactly 244x68. It is decoded once at start-up and composited with the text on the host, so a field can sit on any artwork.
+- **Background**: an optional PNG per page, which must be exactly 244x68. It is decoded once at start-up and composited with the text on the host, so a field can sit on any artwork. The panel resolves 16 greyscale levels, so artwork should not depend on fine tonal gradients; `invertBackground` flips the whole page if the panel reads inverted.
 - **Fields**: `x`, `y`, `width`, and `height` are pixels with the origin at the top-left. `shade` (0-255) sets the text greyscale, so dark text on light artwork is simply a low value. Available `source` values are `literal`, `datetime`, `cpu.utilization`, `cpu.temperature`, `system.temperature`, `net.rx`, `net.tx`, `net.total`, `autocycle`, `shutdown.pendingSeconds`, `shutdown.remaining`, and `shutdown.confirm`. `fallback` supplies the text when a sensor is unreadable.
 - **Fonts** are resolved from the system in `fontFamilies` order; the first installed family wins. Only printable ASCII is rasterized.
 - **Pages** are data. Adding an entry to `pages` adds a page to the keypad ring. `"kind": "shutdown"` keeps a page out of auto-cycling and gives it the Idle/Confirm/CountingDown state machine; leaving its `fields` empty keeps the built-in wording.
@@ -55,7 +57,9 @@ Tune a layout without any hardware attached:
 - Enter on Shutdown: open confirmation.
 - Up/down during confirmation: adjust the shutdown delay in five-second increments.
 - Left/right during confirmation: select Yes or No.
-- Exit: cancel confirmation/countdown, or disable auto-cycle and return to Main.
+- Exit: cancel confirmation/countdown, or disable auto-cycle and return to the first page.
+
+The keypad model is identical in graphic mode; only the rendering differs. Left/right walk the pages in the order `layout.pages` lists them, and pages marked `"kind": "shutdown"` stay out of auto-cycling exactly as the built-in shutdown page does.
 
 ## Command-line modes
 
@@ -76,8 +80,9 @@ Tune a layout without any hardware attached:
 2. Crystalfontz CFA735/835 USB virtual-COM driver.
 3. Signed normal-edition PawnIO 2.2.0 for LibreHardwareMonitor low-level sensor access.
 4. NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe` when installing as a service.
+5. For graphic mode only: the font families named in `layout.fontFamilies` installed on the monitored machine. The first installed family wins; if none is present the app logs a warning and falls back to generic sans-serif. `Bahnschrift SemiLight` ships with Windows 10 and later as a named instance of the `bahnschrift.ttf` variable font, and Windows exposes it to GDI+ as its own family name.
 
-The runtime is a self-contained `win-x64` publish and does not require a separately installed .NET runtime.
+The runtime is a self-contained `win-x64` publish and does not require a separately installed .NET runtime. `System.Drawing.Common` is included for PNG decoding and font rasterization; it wraps GDI+, which is part of Windows, so the release gains no native payload.
 
 ## Release builds
 

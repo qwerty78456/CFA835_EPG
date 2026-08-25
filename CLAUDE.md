@@ -13,9 +13,18 @@ There is no git repository at the top level, but `Cfa835SystemMonitor-640d1d649e
 
 All commands below assume the working directory is `Cfa835SystemMonitor-640d1d649e28-source/`.
 
+`tmp/pdfs/CFA835_Datasheet_HW2_FW1.6.pdf` is committed and is the authoritative protocol reference for the hardware this drives (release 2022-08-24, hardware v2.0 / firmware v1.6). Check it — not a web copy — before changing anything on the wire; the publicly linked datasheet is the older hardware v1.3 / firmware v1.1 revision and differs, notably on shade depth. `tmp/pdfs/rendered/` holds page images of the command-set sections.
+
 ## What this project is
 
-A Windows-only .NET 10 service/console app that drives a Crystalfontz CFA835 USB LCD+keypad+LED module. The main 4-line/20-column screen shows date/time, total CPU utilization, one selected system temperature, and auto-cycle state. The only other metric page is aggregate physical-NIC throughput. A manually reachable Shutdown page confirms, adjusts the countdown, and shells out to `shutdown.exe`. The four bi-color LEDs show power, disk, network, and CPU thermal state.
+A Windows-only .NET 10 service/console app that drives a Crystalfontz CFA835 USB LCD+keypad+LED module.
+
+The module is a 244x68-pixel, 16-shade greyscale graphic panel; its 20x4 character API is one layer on top of that framebuffer. `display.mode` picks which layer the app drives:
+
+- `text` (default) — the 4-line/20-column screen: date/time, total CPU utilization, one selected system temperature, and auto-cycle state, plus an aggregate physical-NIC throughput page.
+- `graphic` — host-composited frames described by `layout.json`: an optional 244x68 background image per page with text boxes placed by pixel rectangle.
+
+Both modes share the same keypad model. A manually reachable Shutdown page confirms, adjusts the countdown, and shells out to `shutdown.exe`. The four bi-color LEDs show power, disk, network, and CPU thermal state.
 
 ## Commands
 
@@ -65,7 +74,7 @@ CfaDevice.cs             → CfaDeviceLocator (registry-based USB VID/PID/serial
 WindowsMetrics.cs         → IMetricSource / WindowsMetricSource: CPU% (GetSystemTimes), disk activity (PDH), NIC throughput (GetIfTable2 via iphlpapi), temperatures (LibreHardwareMonitor)
 DisplayAndLeds.cs          → PageController (keypad/auto-cycle state machine over a PageDescriptor ring + text page rendering, including the Shutdown page's Confirm/CountingDown sub-states), ScreenWriter (diff-based row writes), LedStateMachine (LED policy), SimulationMetricSource
 Layout.cs                   → layout.json model: LayoutDocument/LayoutPage/LayoutField, source+format+rectangle validation, ShutdownTemplates
-GraphicRendering.cs          → GrayscaleImage (PNG decode, 5-bit quantize, preview PNG), IGlyphSource/GdiGlyphSource (start-up glyph atlas), FrameComposer (host-side compositing + field-level diff)
+GraphicRendering.cs          → GrayscaleImage (PNG decode, shade quantize, preview PNG), IGlyphSource/GdiGlyphSource (start-up glyph atlas), FrameComposer (host-side compositing + field-level diff)
 GraphicWriter.cs              → GraphicRuntime (layout + atlas + backgrounds, built once), GraphicScreenWriter (rectangle pushes + one buffer flush per frame)
 Models.cs                   → CfaKey enum, TemperatureReading/InterfaceReading/MetricSnapshot records, IMetricSource interface
 Configuration.cs             → MonitorOptions and sub-option records, JSON config loading/validation, CommandLineOptions parsing
@@ -82,6 +91,7 @@ Key design points:
 - **The glyph atlas is built once at start-up**, in `GdiGlyphSource.Create`, for every distinct `sizePx` in the layout. Rasterizing per frame would put GDI+ in the hot path of a Session 0 service; rasterizing once keeps per-frame work to array blits. Digits share the widest digit advance (tabular) so clocks do not jitter and dirty rectangles stay fixed-size. A space's advance is measured as `"n n"` minus `"nn"` because `GenericTypographic` reports ~0 for a lone space.
 - **Graphic writes diff at field level, not pixel level.** A field is only retransmitted when its formatted string changes; a page or shutdown sub-state change forces the background plus every field. `layout.fullRepaintSeconds` repaints periodically because the subcommand-2 pixel stream is **not CRC-protected** — a corrupted rectangle would otherwise stay on the panel indefinitely.
 - **`SendStreamingCommandAsync` is deliberately retry-free.** The CFA835 only acknowledges subcommand 2 after the whole un-packetized pixel stream arrives, so a retried command packet would be consumed as pixel data. Its timeout scales with payload size instead of the fixed 750 ms that packetized commands get. Every pixel is quantized to a multiple of 8, which also guarantees the stream never contains `0x03`, the RLE escape byte.
+- **Shade depth differs between hardware revisions.** Hardware v2.0 / firmware v1.6 renders **16 shades** from the top 4 bits of each pixel byte; the older hardware v1.3 / firmware v1.1 datasheet documented 32 shades from the top 5 bits. `GrayscaleImage.Quantize` currently masks with `0xF8` (5 bits), which is safe on both but keeps one more bit than a v2.0 panel resolves, so a `--layout-preview` PNG is marginally smoother than the physical display. Everything else in the graphic command group — the 244x68 geometry, the `0-243`/`0-67` valid ranges, and the subcommand 0/1/2/5/7 payloads — is identical across both revisions.
 - **Pages are data in graphic mode.** `PageController` navigates an `IReadOnlyList<PageDescriptor>`; text mode derives that list from `PageCategory`, graphic mode from `layout.pages`, so operators add pages by editing JSON. `PageController.Category` is a derived convenience for the text path only.
 - **Display categories are Main, Network, and Shutdown.** CPU utilization and the selected system temperature exist only on Main. There are no standalone CPU or temperature pages. Auto-cycle alternates Main/Network and skips Shutdown; manual Left/Right navigation reaches all three.
 - **`IMetricSource` is the seam for `--simulate`.** `SimulationMetricSource` wraps a real `WindowsMetricSource` and overrides only the fields a scenario cares about (see `DisplayAndLeds.cs`), leaving everything else pass-through — this is also the pattern to follow for injecting fakes in tests.

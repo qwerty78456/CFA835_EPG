@@ -52,9 +52,9 @@ public sealed class LayoutField
     public string? Font { get; init; }
 
     /// <summary>
-    /// Greyscale level the glyphs are drawn with (0-255, quantized to the panel's 32 shades).
-    /// Anti-aliased edges blend between the background pixel and this value, so dark text on a light
-    /// background is just a low number here.
+    /// Greyscale level the glyphs are drawn with (0-255). Hardware v2.0 resolves 16 shades from the
+    /// top 4 bits, so nearby values look identical on the panel. Anti-aliased edges blend between the
+    /// background pixel and this value, which makes dark text on light artwork just a low number here.
     /// </summary>
     public int Shade { get; init; } = 248;
 

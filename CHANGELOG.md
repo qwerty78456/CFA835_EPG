@@ -2,6 +2,27 @@
 
 All notable changes are recorded here in reverse chronological order. Dates use the builder's local calendar date; `COMMIT.txt` in each release folder is the authoritative source revision.
 
+## 2026-08-25 — Updated documentation
+
+Documentation-only pass over every file in the repository. No behavior changed.
+
+### Corrected
+
+- Corrected the shade depth stated throughout the documentation and code comments. The committed datasheet at `tmp/pdfs/CFA835_Datasheet_HW2_FW1.6.pdf` (hardware v2.0 / firmware v1.6, released 2022-08-24) specifies **16 shades from the top 4 bits** of each pixel byte. The previously cited figure of 32 shades from 5 bits comes from the older hardware v1.3 / firmware v1.1 datasheet and does not describe this hardware. Everything else in the graphic command group — 244x68 geometry, the `0-243`/`0-67` valid ranges, and the subcommand 0/1/2/5/7 payloads — is identical across both revisions.
+- Documented that `GrayscaleImage.Quantize` masks to 5 bits and therefore keeps one bit more than a v2.0 panel resolves. This is harmless on the wire, and the `0x03` RLE-escape guarantee holds either way, but it does make an anti-aliased `--layout-preview` PNG marginally smoother than the physical display.
+
+### Added
+
+- Recorded the committed datasheet as the authoritative protocol reference in the maintainer guide, and warned that the publicly linked copy is the older revision.
+- Added `System.Drawing.Common` and its `Microsoft.Win32.SystemEvents` dependency to the third-party notices, with a note that GDI+ is an operating-system component and that no native imaging library or font file is redistributed.
+- Added the font-family requirement for graphic mode to the runtime prerequisites in both the README and the deployment guide, including a verification snippet.
+- Added a graphic-mode addendum to the physical acceptance test: artwork drawn without tearing, values inside their boxes, no horizontal jitter on the seconds digits, the resolved font logged at start-up, and an invisible periodic full repaint.
+- Added deployment guidance on `layout.json` and background artwork surviving upgrade, rollback, and uninstall, and on reverting `display.mode` when rolling back to a build that predates graphic mode.
+- Added troubleshooting entries for exit code 78 on an invalid layout, blank or inverted graphic output, and missing spaces or `?` characters from the printable-ASCII-only glyph set.
+- Documented that `--layout-preview` does not open the COM port and so, unlike `--diagnose`, does not require stopping the monitor.
+- Documented that `--diagnose` can read back only text written by command 31; the CFA835 cannot report its graphic buffer.
+- Documented that a CPU sensor reporting 0 C or below is treated as unreadable.
+
 ## 2026-08-25
 
 ### Graphic display mode
@@ -19,7 +40,7 @@ All notable changes are recorded here in reverse chronological order. Dates use 
 - Rasterized every printable ASCII character once per configured size into a glyph atlas at start-up, keeping GDI+ out of the per-frame path.
 - Gave digits a shared tabular advance so a running clock does not jitter and each field's transfer rectangle stays a fixed size.
 - Diffed at field level: a field is retransmitted only when its formatted text changes, so a ticking clock costs roughly 1.4 KB per second instead of the full 16.6 KB frame.
-- Quantized every pixel to the panel's 32 shades, which also guarantees the pixel stream can never contain `0x03`, the RLE escape byte in command 40 subcommand 2.
+- Quantized every pixel to a multiple of 8, which guarantees the pixel stream can never contain `0x03`, the RLE escape byte in command 40 subcommand 2.
 - Repainted the whole frame every `layout.fullRepaintSeconds` because the raw pixel stream is not CRC-protected and a corrupted rectangle would otherwise persist.
 
 ### Device protocol

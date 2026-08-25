@@ -29,9 +29,15 @@ public static class GrayscaleImage
     public const int Height = Cfa835Device.DisplayHeight;
 
     /// <summary>
-    /// Snaps a byte to the panel's 32 shades. Keeping every pixel a multiple of 8 also guarantees the
-    /// stream never contains a literal 0x03, which is the RLE escape byte in command 40 subcommand 2.
+    /// Snaps a byte to a multiple of 8, which guarantees the pixel stream never contains a literal
+    /// 0x03 — the RLE escape byte in command 40 subcommand 2.
     /// </summary>
+    /// <remarks>
+    /// Hardware v2.0 renders 16 shades from the top 4 bits and ignores the rest (the older hardware
+    /// v1.3 datasheet documented 32 shades from the top 5 bits), so this keeps one more bit than the
+    /// panel resolves. That is harmless on the wire but does make an anti-aliased --layout-preview
+    /// PNG marginally smoother than the physical display.
+    /// </remarks>
     public static byte Quantize(int value) => (byte)(Math.Clamp(value, 0, 255) & 0xF8);
 
     public static byte[] Blank() => new byte[Width * Height];
