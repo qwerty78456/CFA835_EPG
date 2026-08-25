@@ -161,23 +161,74 @@ public sealed class MonitorApplication
         return 0;
     }
 
+    private static bool IsElevated() => TemperatureMonitor.IsElevated();
+
     /// <summary>
-    /// Whether this process can open ring-0 helper devices such as PawnIO. The service runs as
-    /// LocalSystem and is always elevated; interactive diagnostic runs frequently are not.
+    /// Dumps every sensor LibreHardwareMonitor exposes. This is the tool for answering "why is the
+    /// temperature N/A" — it distinguishes a missing driver, a missing elevation, and hardware whose
+    /// sensors genuinely are not enumerated.
     /// </summary>
-    private static bool IsElevated()
+    public async Task<int> ListSensorsAsync(CancellationToken cancellationToken)
     {
-        try
+        Console.WriteLine($"Elevated: {IsElevated()}");
+        Console.WriteLine($"PawnIO: {(TemperatureMonitor.IsPawnIoPresent() ? "installed" : "NOT INSTALLED")}");
+        if (TemperatureMonitor.IsPawnIoPresent() && !IsElevated())
         {
-            using System.Security.Principal.WindowsIdentity identity =
-                System.Security.Principal.WindowsIdentity.GetCurrent();
-            return new System.Security.Principal.WindowsPrincipal(identity)
-                .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+            Console.WriteLine(
+                "WARNING: not elevated, so ring-0 sensors (CPU temperature) will be missing below. Re-run elevated.");
         }
-        catch (Exception)
+
+        using TemperatureMonitor monitor = new(_loggerFactory.CreateLogger<TemperatureMonitor>());
+        _ = monitor.Describe(DateTimeOffset.Now);
+        // Some sensors only publish a value on the second update, so settle before reporting.
+        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<SensorDescription> sensors = monitor.Describe(DateTimeOffset.Now);
+
+        foreach (IGrouping<string, SensorDescription> group in sensors.GroupBy(sensor =>
+                     $"{sensor.Hardware} [{sensor.HardwareType}]"))
         {
-            return false;
+            Console.WriteLine();
+            Console.WriteLine(group.Key);
+            foreach (SensorDescription sensor in group.OrderBy(item => item.SensorType).ThenBy(item => item.Name))
+            {
+                string value = sensor.Value.HasValue
+                    ? sensor.Value.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                    : "null";
+                Console.WriteLine($"  {sensor.SensorType,-14} {sensor.Name,-34} {value,10}");
+            }
         }
+
+        SensorDescription[] cpuTemperatures = sensors
+            .Where(sensor => sensor.SensorType == "Temperature" && sensor.HardwareType == "Cpu")
+            .ToArray();
+
+        // Counted the way CpuTemperatureSelector treats them: a sensor that exists but reports 0 is
+        // not a reading. That is exactly what a denied ring-0 access looks like from here, so
+        // counting it as "readable" would contradict the N/A shown on the display.
+        int usableCpu = cpuTemperatures.Count(sensor => sensor.Value is > 0);
+        int deadCpu = cpuTemperatures.Count(sensor => sensor.Value is <= 0);
+        int usableAny = sensors.Count(sensor => sensor.SensorType == "Temperature" && sensor.Value is > 0);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            $"{sensors.Count} sensors, {usableAny} temperatures with a plausible value, {usableCpu} of them on the CPU.");
+
+        if (usableCpu == 0)
+        {
+            Console.WriteLine("cpu.temperature will render its fallback text.");
+            if (deadCpu > 0)
+            {
+                Console.WriteLine(
+                    $"  {deadCpu} CPU temperature sensor(s) are enumerated but report 0, which is what a denied");
+                Console.WriteLine("  ring-0 read looks like. Confirm PawnIO is installed and re-run elevated.");
+            }
+            else
+            {
+                Console.WriteLine("  No CPU temperature sensor was enumerated at all; this CPU may be unsupported.");
+            }
+        }
+
+        return usableCpu > 0 ? 0 : 1;
     }
 
     /// <summary>
@@ -232,6 +283,9 @@ public sealed class MonitorApplication
     public async Task<int> LayoutPreviewAsync(CommandLineOptions commandLine, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        // Reported here too: an unelevated preview silently renders cpu.temperature as its fallback,
+        // which reads as a layout problem when it is a permissions one.
+        Console.WriteLine($"Elevated: {IsElevated()}");
         GraphicRuntime runtime = GraphicRuntime.Create(_options, _loggerFactory);
         LayoutPage page = commandLine.PreviewPage is null
             ? runtime.Layout.Pages[0]

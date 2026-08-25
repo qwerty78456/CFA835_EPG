@@ -75,6 +75,7 @@ public static class Program
                 AppMode.Diagnose => await application.DiagnoseAsync(shutdown.Token),
                 AppMode.HardwareTest => await application.HardwareTestAsync(commandLine.NonInteractive, shutdown.Token),
                 AppMode.LayoutPreview => await application.LayoutPreviewAsync(commandLine, shutdown.Token),
+                AppMode.ListSensors => await application.ListSensorsAsync(shutdown.Token),
                 _ => await application.RunAsync(commandLine.Simulation, shutdown.Token)
             };
         }

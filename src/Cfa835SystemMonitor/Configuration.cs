@@ -210,7 +210,8 @@ public enum AppMode
     Monitor,
     Diagnose,
     HardwareTest,
-    LayoutPreview
+    LayoutPreview,
+    ListSensors
 }
 
 public sealed record CommandLineOptions(
@@ -241,6 +242,9 @@ public sealed record CommandLineOptions(
                     break;
                 case "--hardware-test":
                     mode = AppMode.HardwareTest;
+                    break;
+                case "--list-sensors":
+                    mode = AppMode.ListSensors;
                     break;
                 case "--noninteractive":
                     nonInteractive = true;
@@ -301,6 +305,7 @@ public sealed record CommandLineOptions(
           --noninteractive           Use a timed hardware test without waiting for keys
           --config <path>            Use an alternate appsettings.json
           --simulate <scenario>      thermal-89|thermal-90|thermal-92|disk|network-rx|network-tx|network-both
+          --list-sensors             Dump every LibreHardwareMonitor sensor; run elevated
           --layout-preview [file]    Render the graphic layout to a PNG; no CFA835 required
                                      (accepts --simulate to preview realistic sensor values)
           --preview-page <id>        Layout page to preview (default: the first page)

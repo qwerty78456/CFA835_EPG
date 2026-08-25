@@ -2,6 +2,19 @@
 
 All notable changes are recorded here in reverse chronological order. Dates use the builder's local calendar date; `COMMIT.txt` in each release folder is the authoritative source revision.
 
+## 2026-08-25 — Sensor diagnostics
+
+### Added
+
+- Added `--list-sensors`, which dumps every sensor LibreHardwareMonitor exposes, grouped by hardware, and ends with a verdict. It separates the three reasons a CPU temperature can be missing: a sensor present but reading `0.0` (the ring-0 read was denied), no CPU temperature sensor enumerated at all (unsupported CPU), or a plausible value present (the sensor path works, so an `N/A` on the display is a layout or selection problem). It exits non-zero in the first two cases.
+- `--layout-preview` now prints an `Elevated:` line. Previously only `--diagnose` did, so an unelevated preview rendered `cpu.temperature` as its fallback with nothing to indicate that permissions, not the layout, were responsible.
+- `TemperatureMonitor` logs a one-time warning when PawnIO is installed, the process is not elevated, and no CPU temperature was obtained. This covers every mode, not just the diagnostics.
+
+### Notes
+
+- Installing PawnIO is necessary but not sufficient for an interactive run: opening `\\?\GLOBALROOT\Device\PawnIO` also requires elevation. When it is denied, LibreHardwareMonitor still enumerates `Core (Tctl/Tdie)` but the sensor reports **0**, not null — which is exactly why `CpuTemperatureSelector` treats a non-positive CPU reading as no reading. The Windows service runs as LocalSystem and is unaffected.
+- Confirmed against LibreHardwareMonitor 0.9.6 that AMD family `0x1A` (Zen 5, e.g. Ryzen 7 9800X3D) maps to `Amd17Cpu` and is supported, alongside `0x17` and `0x19`.
+
 ## 2026-08-25 — Open source licensing and bundled PawnIO
 
 ### Added

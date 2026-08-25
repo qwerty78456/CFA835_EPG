@@ -353,6 +353,10 @@ After transfer, re-run section 3 on the monitored machine. Network transfer succ
 
 ### Temperature is `N/A`
 
+- **Run `--list-sensors` from an elevated shell first.** It dumps every sensor LibreHardwareMonitor exposes and ends with a verdict, exiting non-zero when no CPU temperature has a plausible value. The three outcomes it separates:
+  - a CPU temperature sensor exists and reads `0.0` — the ring-0 read was denied, so the driver is missing or the process is not elevated;
+  - no CPU temperature sensor is enumerated at all — the CPU is not supported by this LibreHardwareMonitor build;
+  - a plausible value is present — the sensor path works and any `N/A` on the display is a layout or selection problem instead.
 - **Check `Elevated:` first.** `PawnIO: installed` only proves the driver is registered; opening `\\?\GLOBALROOT\Device\PawnIO` additionally requires elevation, and an unelevated process gets `Access is denied`. `PawnIO: installed` together with `Elevated: False` and a missing CPU temperature is that case, not a driver fault — re-run from an elevated shell. The installed service runs as LocalSystem, so this only ever affects interactive `--diagnose` and `--layout-preview` runs.
 - Confirm PawnIO normal edition is installed and readable by the process identity. `PawnIO installed: False` in the log is the usual answer on its own: without ring-0 access LibreHardwareMonitor cannot read CPU temperatures on **either** AMD or Intel, so a CPU-vendor difference between the build workstation and the monitored machine is not the explanation. Install it from the bundled `third-party\pawnio\PawnIO_setup.exe`, or re-run `Install-Service.ps1`, which does the same. Confirm afterwards that the driver service is actually loaded, not merely that the installer ran:
 

@@ -76,9 +76,13 @@ The keypad model is identical in graphic mode; only the rendering differs. Left/
 .\Cfa835SystemMonitor.exe --simulate thermal-90
 .\Cfa835SystemMonitor.exe --config C:\path\appsettings.json
 .\Cfa835SystemMonitor.exe --layout-preview preview.png --preview-page DateTime --preview-scale 6
+.\Cfa835SystemMonitor.exe --list-sensors
 ```
 
-`--layout-preview` needs no CFA835 at all: it renders one layout page to a PNG using live metrics, which is the intended way to position boxes before touching hardware. `--diagnose` reads device/sensor state and prints the four rows currently stored in display RAM without changing the display, keypad configuration, LEDs, or persistent device settings. `--hardware-test` temporarily exercises the display and LEDs, watches keypad presses, and restores the state captured at startup. Only one process can own the CFA835 COM port at a time; stop the running monitor before either hardware mode.
+`--list-sensors` dumps every sensor LibreHardwareMonitor exposes, with a summary that distinguishes
+a missing driver, a missing elevation, and hardware whose sensors genuinely are not enumerated. It
+exits non-zero when no CPU temperature has a plausible value, so it is the first thing to run when
+`cpu.temperature` shows its fallback. Run it elevated. `--layout-preview` needs no CFA835 at all: it renders one layout page to a PNG using live metrics, which is the intended way to position boxes before touching hardware. `--diagnose` reads device/sensor state and prints the four rows currently stored in display RAM without changing the display, keypad configuration, LEDs, or persistent device settings. `--hardware-test` temporarily exercises the display and LEDs, watches keypad presses, and restores the state captured at startup. Only one process can own the CFA835 COM port at a time; stop the running monitor before either hardware mode.
 
 ## Runtime prerequisites
 

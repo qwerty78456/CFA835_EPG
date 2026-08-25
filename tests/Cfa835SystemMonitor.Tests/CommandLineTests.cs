@@ -59,6 +59,21 @@ public sealed class CommandLineTests
     }
 
     [Fact]
+    public void ListSensorsIsItsOwnMode()
+    {
+        CommandLineOptions options = CommandLineOptions.Parse(["--list-sensors"]);
+
+        Assert.Equal(AppMode.ListSensors, options.Mode);
+        Assert.Null(options.Simulation);
+    }
+
+    [Fact]
+    public void ListSensorsRejectsSimulateBecauseItReportsRealHardware()
+    {
+        Assert.Throws<ArgumentException>(() => CommandLineOptions.Parse(["--list-sensors", "--simulate", "thermal-90"]));
+    }
+
+    [Fact]
     public void UnknownArgumentsAreRejected()
     {
         Assert.Throws<ArgumentException>(() => CommandLineOptions.Parse(["--nope"]));
@@ -69,7 +84,8 @@ public sealed class CommandLineTests
     {
         Assert.Throws<HelpRequestedException>(() => CommandLineOptions.Parse(["--help"]));
 
-        foreach (string flag in new[] { "--diagnose", "--hardware-test", "--simulate", "--layout-preview", "--config" })
+        foreach (string flag in new[]
+                 { "--diagnose", "--hardware-test", "--simulate", "--layout-preview", "--list-sensors", "--config" })
         {
             Assert.Contains(flag, CommandLineOptions.HelpText, StringComparison.Ordinal);
         }

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using LibreHardwareMonitor.Hardware;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
@@ -90,6 +91,14 @@ public static class CpuTemperatureSelector
         .Select(reading => reading.Celsius)
         .Max();
 }
+
+/// <summary>One LibreHardwareMonitor sensor, flattened for diagnostic output.</summary>
+public sealed record SensorDescription(
+    string Hardware,
+    string HardwareType,
+    string SensorType,
+    string Name,
+    float? Value);
 
 public sealed record TemperatureSelection(
     TemperatureReading? SystemTemperature,
@@ -460,6 +469,7 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
     private DateTimeOffset _openedAt;
     private readonly ThermalZoneTemperatureSampler _thermalZones = new(logger);
     private bool _fallbackLogged;
+    private bool _elevationLogged;
 
     public TemperatureSelection Poll(DateTimeOffset now)
     {
@@ -482,6 +492,17 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
             logger.LogWarning(
                 "LibreHardwareMonitor returned no readable temperatures; using Windows ACPI thermal-zone fallback");
             _fallbackLogged = true;
+        }
+
+        // A registered PawnIO driver is necessary but not sufficient: opening its device also needs
+        // elevation, and an unelevated process silently reads no CPU temperature at all. Say so once
+        // rather than leaving the field showing its fallback text with no explanation.
+        if (!_elevationLogged && !selection.HottestCpuC.HasValue && IsPawnIoPresent() && !IsElevated())
+        {
+            logger.LogWarning(
+                "PawnIO is installed but this process is not elevated, so CPU temperature is unavailable. " +
+                "Run elevated, or as the LocalSystem service, to read it.");
+            _elevationLogged = true;
         }
 
         return selection;
@@ -522,6 +543,60 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
         foreach (IHardware child in hardware.SubHardware)
         {
             UpdateAndCollect(child, readings);
+        }
+    }
+
+    /// <summary>
+    /// Whether this process can open ring-0 helper devices such as <c>\\?\GLOBALROOT\Device\PawnIO</c>.
+    /// Installing the driver is not sufficient: an unelevated process gets access denied, so CPU
+    /// temperatures read as unavailable. The Windows service runs as LocalSystem and is unaffected.
+    /// </summary>
+    public static bool IsElevated()
+    {
+        try
+        {
+            using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+            return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Every sensor LibreHardwareMonitor currently exposes, for the --list-sensors diagnostic.</summary>
+    public IReadOnlyList<SensorDescription> Describe(DateTimeOffset now)
+    {
+        if (_computer is null)
+        {
+            Reopen(now);
+        }
+
+        List<SensorDescription> described = [];
+        foreach (IHardware hardware in _computer!.Hardware)
+        {
+            DescribeHardware(hardware, described);
+        }
+
+        return described;
+    }
+
+    private static void DescribeHardware(IHardware hardware, ICollection<SensorDescription> described)
+    {
+        hardware.Update();
+        foreach (ISensor sensor in hardware.Sensors)
+        {
+            described.Add(new SensorDescription(
+                hardware.Name,
+                hardware.HardwareType.ToString(),
+                sensor.SensorType.ToString(),
+                sensor.Name,
+                sensor.Value));
+        }
+
+        foreach (IHardware child in hardware.SubHardware)
+        {
+            DescribeHardware(child, described);
         }
     }
 
