@@ -282,6 +282,78 @@ public sealed class DisplayTests
             Assert.All(row, character => Assert.InRange(character, ' ', '~'));
         });
 
+    [Fact]
+    public void LayoutDefinedPagesDriveTheNavigationRing()
+    {
+        PageController pages = new(
+            _display,
+            new ShutdownOptions(),
+            new FakeShutdownExecutor(),
+            [new PageDescriptor("Main", false), new PageDescriptor("Gpu", false), new PageDescriptor("Bye", true)]);
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-25T12:00:00Z");
+
+        Assert.Equal("Main", pages.CurrentPageId);
+        Assert.True(pages.HandleKey(CfaKey.Right, now));
+        Assert.Equal("Gpu", pages.CurrentPageId);
+        Assert.True(pages.HandleKey(CfaKey.Right, now = now.AddMilliseconds(200)));
+        Assert.Equal("Bye", pages.CurrentPageId);
+        // Wrapping stays inside the configured ring rather than the built-in category count.
+        Assert.True(pages.HandleKey(CfaKey.Right, now = now.AddMilliseconds(200)));
+        Assert.Equal("Main", pages.CurrentPageId);
+        Assert.True(pages.HandleKey(CfaKey.Left, now.AddMilliseconds(200)));
+        Assert.Equal("Bye", pages.CurrentPageId);
+    }
+
+    [Fact]
+    public void AutoCycleSkipsLayoutPagesMarkedAsShutdown()
+    {
+        PageController pages = new(
+            _display,
+            new ShutdownOptions(),
+            new FakeShutdownExecutor(),
+            [new PageDescriptor("Main", false), new PageDescriptor("Bye", true), new PageDescriptor("Gpu", false)]);
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-25T12:00:00Z");
+        pages.HandleKey(CfaKey.Enter, now);
+
+        List<string> visited = [];
+        for (int step = 0; step < 6; step++)
+        {
+            now = now.AddSeconds(_display.AutoCycleSeconds + 1);
+            pages.Tick(now);
+            visited.Add(pages.CurrentPageId);
+        }
+
+        Assert.DoesNotContain("Bye", visited);
+        Assert.Contains("Main", visited);
+        Assert.Contains("Gpu", visited);
+    }
+
+    [Fact]
+    public void EnterOnALayoutShutdownPageStartsTheConfirmFlow()
+    {
+        FakeShutdownExecutor executor = new();
+        PageController pages = new(
+            _display,
+            new ShutdownOptions { CountdownSeconds = 20 },
+            executor,
+            [new PageDescriptor("Main", false), new PageDescriptor("Bye", true)]);
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-25T12:00:00Z");
+
+        pages.HandleKey(CfaKey.Right, now);
+        Assert.Equal("Bye", pages.CurrentPageId);
+        pages.HandleKey(CfaKey.Enter, now = now.AddMilliseconds(200));
+        Assert.Equal(ShutdownUiState.Confirm, pages.ShutdownState);
+
+        pages.HandleKey(CfaKey.Left, now = now.AddMilliseconds(200));
+        pages.HandleKey(CfaKey.Enter, now = now.AddMilliseconds(200));
+
+        Assert.Equal(ShutdownUiState.CountingDown, pages.ShutdownState);
+        Assert.Equal([20], executor.Requested);
+        Assert.Equal(20, pages.RemainingSeconds(now));
+        Assert.Equal(15, pages.RemainingSeconds(now.AddSeconds(5)));
+        Assert.Equal(0, pages.RemainingSeconds(now.AddSeconds(90)));
+    }
+
     private static PageController Controller(
         DisplayOptions display, FakeShutdownExecutor executor, int countdownSeconds = 30) =>
         new(display, new ShutdownOptions { CountdownSeconds = countdownSeconds }, executor);

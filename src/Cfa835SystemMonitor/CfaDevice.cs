@@ -43,6 +43,14 @@ public sealed class CfaDeviceLocator(DeviceOptions options)
 
 public sealed class Cfa835Device(ICfaTransport transport, ILogger<Cfa835Device> logger) : IAsyncDisposable
 {
+    /// <summary>Pixel width of the CFA835 graphic LCD (datasheet command 40, 0x28).</summary>
+    public const int DisplayWidth = 244;
+
+    /// <summary>Pixel height of the CFA835 graphic LCD.</summary>
+    public const int DisplayHeight = 68;
+
+    private const byte GraphicCommand = 0x28;
+
     private static readonly (byte Green, byte Red)[] LedGpio =
     [
         (11, 12),
@@ -170,11 +178,113 @@ public sealed class Cfa835Device(ICfaTransport transport, ILogger<Cfa835Device> 
         return (byte)Math.Min(response.Data[2], (byte)100);
     }
 
-    public async Task BlankAndTurnOffAsync(CancellationToken cancellationToken)
+    /// <summary>Command 6 (0x06): clears the text buffer, the graphic buffer and any playing video.</summary>
+    public async Task ClearDisplayAsync(CancellationToken cancellationToken)
     {
-        for (int row = 0; row < 4; row++)
+        await transport.SendCommandAsync(0x06, ReadOnlyMemory<byte>.Empty, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Command 40 (0x28) subcommand 0. With <paramref name="manualFlush"/> the module accumulates every
+    /// graphic write until <see cref="FlushBufferAsync"/> runs, so a frame appears in one piece.
+    /// Note that command 31 (0x1F) text writes bypass the buffer entirely and must not be mixed in.
+    /// </summary>
+    public async Task SetGraphicOptionsAsync(bool manualFlush, bool gammaCorrection, CancellationToken cancellationToken)
+    {
+        byte flags = (byte)((manualFlush ? 0x01 : 0x00) | (gammaCorrection ? 0x02 : 0x00));
+        await transport.SendCommandAsync(GraphicCommand, new byte[] { 0, flags }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Command 40 (0x28) subcommand 1: push the graphic buffer to the panel.</summary>
+    public async Task FlushBufferAsync(CancellationToken cancellationToken)
+    {
+        await transport.SendCommandAsync(GraphicCommand, new byte[] { 1 }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Command 40 (0x28) subcommand 2: write a rectangle of raw 8-bit greyscale pixels at (x, y).
+    /// The pixel stream leaves the packet layer, so it carries no CRC — callers repaint periodically.
+    /// </summary>
+    public async Task SendImageAsync(
+        int x,
+        int y,
+        int width,
+        int height,
+        ReadOnlyMemory<byte> pixels,
+        bool transparency,
+        bool invert,
+        CancellationToken cancellationToken)
+    {
+        ValidateRectangle(x, y, width, height);
+        if (pixels.Length != width * height)
         {
-            await WriteRowAsync(row, string.Empty, cancellationToken).ConfigureAwait(false);
+            throw new ArgumentException(
+                $"Expected {width * height} pixel bytes for a {width}x{height} image but received {pixels.Length}.",
+                nameof(pixels));
+        }
+
+        byte flags = (byte)((transparency ? 0x01 : 0x00) | (invert ? 0x02 : 0x00));
+        byte[] header = [2, flags, (byte)x, (byte)y, (byte)width, (byte)height];
+        await transport.SendStreamingCommandAsync(GraphicCommand, header, pixels, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Command 40 (0x28) subcommand 5 (read form). Used by diagnostics to confirm shade polarity and
+    /// glyph geometry on real hardware without needing a microSD card for a screenshot.
+    /// </summary>
+    public async Task<byte> ReadPixelAsync(int x, int y, CancellationToken cancellationToken)
+    {
+        ValidateRectangle(x, y, 1, 1);
+        CfaPacket response = await transport
+            .SendCommandAsync(GraphicCommand, new byte[] { 5, (byte)x, (byte)y }, cancellationToken)
+            .ConfigureAwait(false);
+        if (response.Data.Length < 2 || response.Data[0] != 5)
+        {
+            throw new InvalidDataException($"Unexpected pixel-read response for ({x}, {y}).");
+        }
+
+        return response.Data[1];
+    }
+
+    /// <summary>Command 40 (0x28) subcommand 7: outline a rectangle, used to preview layout boxes.</summary>
+    public async Task DrawRectangleAsync(
+        int x,
+        int y,
+        int width,
+        int height,
+        byte lineShade,
+        byte fillShade,
+        CancellationToken cancellationToken)
+    {
+        ValidateRectangle(x, y, width, height);
+        byte[] payload = [7, (byte)x, (byte)y, (byte)width, (byte)height, lineShade, fillShade];
+        await transport.SendCommandAsync(GraphicCommand, payload, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void ValidateRectangle(int x, int y, int width, int height)
+    {
+        if (width < 1 || height < 1 || x < 0 || y < 0 ||
+            x + width > DisplayWidth || y + height > DisplayHeight)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(width),
+                $"Rectangle ({x}, {y}, {width}, {height}) does not fit the {DisplayWidth}x{DisplayHeight} display.");
+        }
+    }
+
+    public async Task BlankAndTurnOffAsync(CancellationToken cancellationToken, bool graphicMode = false)
+    {
+        if (graphicMode)
+        {
+            // Blanking text rows would leave the composited artwork behind, so clear both buffers.
+            await ClearDisplayAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            for (int row = 0; row < 4; row++)
+            {
+                await WriteRowAsync(row, string.Empty, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         for (int led = 0; led < 4; led++)

@@ -14,6 +14,40 @@ The page order is deliberately small:
 
 There are no separate CPU or temperature pages. Auto-cycle alternates between Main and Network and never lands on Shutdown.
 
+## Graphic mode
+
+The CFA835 is a 244x68 monochrome/greyscale graphic panel; the 20x4 character API is one layer on top of it. Setting `"display": { "mode": "graphic" }` in `appsettings.json` switches to composited frames driven by `layout.json`, which lives beside `appsettings.json`.
+
+```jsonc
+{
+  "version": 1,
+  "refreshMs": 250,
+  "fontFamilies": [ "Bahnschrift SemiLight", "Times New Roman" ],
+  "pages": [
+    {
+      "id": "DateTime",
+      "background": "background.png",
+      "fields": [
+        { "source": "datetime", "format": "HH:mm:ss",
+          "x": 64, "y": 4, "width": 176, "height": 18, "align": "center", "sizePx": 24 }
+      ]
+    }
+  ]
+}
+```
+
+- **Background**: an optional PNG per page, which must be exactly 244x68. It is decoded once at start-up and composited with the text on the host, so a field can sit on any artwork.
+- **Fields**: `x`, `y`, `width`, and `height` are pixels with the origin at the top-left. `shade` (0-255) sets the text greyscale, so dark text on light artwork is simply a low value. Available `source` values are `literal`, `datetime`, `cpu.utilization`, `cpu.temperature`, `system.temperature`, `net.rx`, `net.tx`, `net.total`, `autocycle`, `shutdown.pendingSeconds`, `shutdown.remaining`, and `shutdown.confirm`. `fallback` supplies the text when a sensor is unreadable.
+- **Fonts** are resolved from the system in `fontFamilies` order; the first installed family wins. Only printable ASCII is rasterized.
+- **Pages** are data. Adding an entry to `pages` adds a page to the keypad ring. `"kind": "shutdown"` keeps a page out of auto-cycling and gives it the Idle/Confirm/CountingDown state machine; leaving its `fields` empty keeps the built-in wording.
+- **Cost**: only fields whose formatted text changed are retransmitted, so a ticking clock costs about 1.4 KB per second rather than the 16.6 KB full frame. The whole frame is repainted every `fullRepaintSeconds` because the pixel stream is not CRC-protected.
+
+Tune a layout without any hardware attached:
+
+```powershell
+.\Cfa835SystemMonitor.exe --layout-preview preview.png --preview-page DateTime --preview-scale 6
+```
+
 ## Keypad
 
 - Left/right: previous or next page.
@@ -31,9 +65,10 @@ There are no separate CPU or temperature pages. Auto-cycle alternates between Ma
 .\Cfa835SystemMonitor.exe --hardware-test --noninteractive
 .\Cfa835SystemMonitor.exe --simulate thermal-90
 .\Cfa835SystemMonitor.exe --config C:\path\appsettings.json
+.\Cfa835SystemMonitor.exe --layout-preview preview.png --preview-page DateTime --preview-scale 6
 ```
 
-`--diagnose` reads device/sensor state and prints the four rows currently stored in display RAM without changing the display, keypad configuration, LEDs, or persistent device settings. `--hardware-test` temporarily exercises the display and LEDs, watches keypad presses, and restores the state captured at startup. Only one process can own the CFA835 COM port at a time; stop the running monitor before either hardware mode.
+`--layout-preview` needs no CFA835 at all: it renders one layout page to a PNG using live metrics, which is the intended way to position boxes before touching hardware. `--diagnose` reads device/sensor state and prints the four rows currently stored in display RAM without changing the display, keypad configuration, LEDs, or persistent device settings. `--hardware-test` temporarily exercises the display and LEDs, watches keypad presses, and restores the state captured at startup. Only one process can own the CFA835 COM port at a time; stop the running monitor before either hardware mode.
 
 ## Runtime prerequisites
 

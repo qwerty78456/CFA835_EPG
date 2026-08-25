@@ -1,0 +1,71 @@
+{
+  // Graphic-mode layout for the 244x68 CFA835 panel. Enable it with "display": { "mode": "graphic" }
+  // in appsettings.json. Coordinates are pixels: x 0-243, y 0-67, origin top-left.
+  //
+  // To use the artwork: drop a 244x68 PNG next to this file and add "background" to the page below,
+  // e.g. "background": "background.png". Preview any change without hardware:
+  //   Cfa835SystemMonitor.exe --layout-preview preview.png
+  "version": 1,
+  "refreshMs": 250,
+  "fullRepaintSeconds": 60,
+  "gammaCorrection": true,
+  "invertBackground": false,
+  "fontFamilies": [ "Bahnschrift SemiLight", "Times New Roman" ],
+  "pages": [
+    {
+      "id": "DateTime",
+      "kind": "normal",
+      // "background": "background.png",
+      "fields": [
+        // Top box: time large, date small underneath. No labels, per the approved mock-up.
+        {
+          "source": "datetime",
+          "format": "HH:mm:ss",
+          "x": 64, "y": 4, "width": 176, "height": 18,
+          "align": "center", "sizePx": 24, "shade": 248
+        },
+        {
+          "source": "datetime",
+          "format": "dd/MM/yyyy",
+          "x": 64, "y": 22, "width": 176, "height": 12,
+          "align": "center", "sizePx": 12, "shade": 248
+        },
+        // Bottom-left box: CPU utilization.
+        {
+          "source": "cpu.utilization",
+          "format": "0.0'%'",
+          "x": 64, "y": 42, "width": 84, "height": 20,
+          "align": "center", "sizePx": 20, "shade": 248
+        },
+        // Bottom-right box: CPU temperature, "N/A" when no sensor is readable.
+        {
+          "source": "cpu.temperature",
+          "format": "0'C'",
+          "fallback": "N/A",
+          "x": 154, "y": 42, "width": 86, "height": 20,
+          "align": "center", "sizePx": 20, "shade": 248
+        }
+      ]
+    },
+    {
+      "id": "Network",
+      "kind": "normal",
+      "fields": [
+        { "source": "literal", "text": "NETWORK Mbps", "x": 0, "y": 1, "width": 244, "height": 14, "align": "center", "sizePx": 12 },
+        { "source": "literal", "text": "Rx", "x": 8, "y": 17, "width": 40, "height": 14, "align": "left", "sizePx": 12 },
+        { "source": "net.rx", "format": "0.00", "x": 56, "y": 17, "width": 180, "height": 14, "align": "right", "sizePx": 12 },
+        { "source": "literal", "text": "Tx", "x": 8, "y": 33, "width": 40, "height": 14, "align": "left", "sizePx": 12 },
+        { "source": "net.tx", "format": "0.00", "x": 56, "y": 33, "width": 180, "height": 14, "align": "right", "sizePx": 12 },
+        { "source": "literal", "text": "Total", "x": 8, "y": 49, "width": 48, "height": 14, "align": "left", "sizePx": 12 },
+        { "source": "net.total", "format": "0.00", "x": 56, "y": 49, "width": 180, "height": 14, "align": "right", "sizePx": 12 }
+      ]
+    },
+    {
+      // Reachable only by pressing Left/Right to it; auto-cycle skips shutdown pages.
+      // Empty "fields" keeps the built-in Idle/Confirm/CountingDown templates.
+      "id": "Shutdown",
+      "kind": "shutdown",
+      "fields": []
+    }
+  ]
+}

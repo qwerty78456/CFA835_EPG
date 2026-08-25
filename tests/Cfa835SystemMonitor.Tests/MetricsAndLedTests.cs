@@ -79,6 +79,22 @@ public sealed class MetricsAndLedTests
     }
 
     [Fact]
+    public void HottestCpuIgnoresNonPositiveSensorValues()
+    {
+        // Without PawnIO, LibreHardwareMonitor can still enumerate CPU sensors and report 0 for them.
+        // A CPU is never at or below 0 C in any deployment this drives, so 0 means "unreadable" and
+        // must surface as no reading at all rather than as a plausible-looking 0 C on the display.
+        TemperatureReading[] readings =
+        [
+            new("AMD CPU", "Core (Tctl/Tdie)", 0, true),
+            new("AMD CPU", "CCD1", -40, true)
+        ];
+
+        Assert.Null(CpuTemperatureSelector.Hottest(readings));
+        Assert.Equal(55, CpuTemperatureSelector.Hottest([.. readings, new("AMD CPU", "CCD2", 55, true)]));
+    }
+
+    [Fact]
     public void TemperatureReadingsFallBackWhenPrimaryValuesAreUnavailable()
     {
         TemperatureReading[] primary =

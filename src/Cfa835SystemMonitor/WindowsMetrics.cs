@@ -85,7 +85,7 @@ public static class CpuTemperatureSelector
 {
     public static double? Hottest(IEnumerable<TemperatureReading> readings) => readings
         .Where(reading => reading.IsCpu &&
-            reading.Celsius.HasValue &&
+            reading.Celsius is > 0 &&
             !reading.Name.Contains("Distance to TjMax", StringComparison.OrdinalIgnoreCase))
         .Select(reading => reading.Celsius)
         .Max();

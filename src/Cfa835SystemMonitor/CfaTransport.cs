@@ -10,6 +10,19 @@ public interface ICfaTransport : IAsyncDisposable
     event Action<Exception?>? ConnectionLost;
     Task OpenAsync(string portName, CancellationToken cancellationToken);
     Task<CfaPacket> SendCommandAsync(byte command, ReadOnlyMemory<byte> data, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Sends a command packet and then streams <paramref name="payload"/> as raw, un-packetized,
+    /// un-CRC-checked bytes. The CFA835 only acknowledges once the whole stream has arrived, so this
+    /// never retries: a partial stream leaves the module mid-transfer and a retried command packet
+    /// would be consumed as pixel data. Callers recover by repainting.
+    /// </summary>
+    Task<CfaPacket> SendStreamingCommandAsync(
+        byte command,
+        ReadOnlyMemory<byte> header,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken);
+
     Task CloseAsync();
 }
 
@@ -107,6 +120,68 @@ public sealed class SerialCfaTransport(ILogger<SerialCfaTransport> logger) : ICf
             }
 
             throw new TimeoutException($"CFA command 0x{command:X2} failed after three attempts.", lastError);
+        }
+        finally
+        {
+            _commandGate.Release();
+        }
+    }
+
+    public async Task<CfaPacket> SendStreamingCommandAsync(
+        byte command,
+        ReadOnlyMemory<byte> header,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken)
+    {
+        await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!IsOpen || _port is null)
+            {
+                throw new IOException("CFA835 serial port is not open.");
+            }
+
+            TaskCompletionSource<CfaPacket> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_pendingLock)
+            {
+                _pending = new PendingCommand((byte)(command & 0x3F), completion);
+            }
+
+            try
+            {
+                byte[] encoded = new CfaPacket((byte)(command & 0x3F), header.ToArray()).Encode();
+                await _port.BaseStream.WriteAsync(encoded, cancellationToken).ConfigureAwait(false);
+                await _port.BaseStream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+                await _port.BaseStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+                // The datasheet gives the host 500 ms (USB) to deliver the raw stream and the module
+                // only acknowledges afterwards, so the ceiling scales with payload size instead of
+                // using the fixed 750 ms budget that packetized commands get.
+                TimeSpan timeout = TimeSpan.FromMilliseconds(1000 + (payload.Length / 4));
+                CfaPacket response = await completion.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+                if (response.PacketClass == 0xC0)
+                {
+                    throw new CfaCommandException(command, response);
+                }
+
+                return response;
+            }
+            catch (TimeoutException exception)
+            {
+                logger.LogWarning("CFA streaming command 0x{Command:X2} ({Bytes} bytes) timed out", command, payload.Length);
+                throw new TimeoutException(
+                    $"CFA streaming command 0x{command:X2} did not acknowledge {payload.Length} bytes.", exception);
+            }
+            finally
+            {
+                lock (_pendingLock)
+                {
+                    if (_pending?.Completion == completion)
+                    {
+                        _pending = null;
+                    }
+                }
+            }
         }
         finally
         {

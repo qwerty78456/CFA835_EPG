@@ -95,11 +95,41 @@ The service scripts intentionally preserve the ProgramData configuration across 
 
 - `device`: USB identity and fallback COM port;
 - `sampling`: temperature, activity, and display intervals;
-- `display`: auto-cycle startup state, interval, date format, and time format;
+- `display`: rendering mode, layout file path, auto-cycle startup state, interval, date format, and time format;
 - `thermal`: TjMax, warning margin, and clear hysteresis;
 - `shutdown`: default countdown duration.
 
 Keep secrets out of this file; the current schema contains no secret-bearing settings.
+
+### 4.1 Graphic mode and `layout.json`
+
+`display.mode` defaults to `text` and reproduces every previous release exactly. Setting it to `graphic` additionally requires `layout.json`, resolved from `display.layoutPath` relative to the directory the configuration came from — so a service install reads `C:\ProgramData\Cfa835SystemMonitor\layout.json`, not the copy beside the executable.
+
+Deploying a graphic layout:
+
+1. Copy `layout.json` from the release folder to `C:\ProgramData\Cfa835SystemMonitor\` and edit it there.
+2. Export the artwork as a PNG that is **exactly 244x68 pixels**, place it in the same directory, and reference it from the page with `"background": "background.png"`. Any other size is rejected at start-up.
+3. Set the text `shade` to suit the artwork. `248` is white text for dark artwork; use a low value such as `8` for dark text on light artwork. If the whole panel reads inverted, set `"invertBackground": true` rather than re-exporting the image.
+4. Position the boxes with no hardware attached, iterating until the PNG looks right:
+
+   ```powershell
+   .\Cfa835SystemMonitor.exe --config C:\ProgramData\Cfa835SystemMonitor\appsettings.json --layout-preview preview.png --preview-scale 6
+   ```
+
+5. Confirm the parsed layout, then check alignment on the physical panel:
+
+   ```powershell
+   .\Cfa835SystemMonitor.exe --diagnose
+   ```
+   ```powershell
+   .\Cfa835SystemMonitor.exe --hardware-test
+   ```
+
+   In graphic mode `--hardware-test` pushes the first page and then outlines every field rectangle, so misplaced boxes are visible against the artwork. It clears the graphic buffer during restore, because the CFA835 cannot read a graphic frame back.
+
+An invalid `layout.json` — a rectangle leaving the 244x68 panel, an unknown `source`, a missing background file, a duplicate page id — fails at start-up with exit code 78 and a message naming the page and field index. It never reaches the monitor loop.
+
+`layout.refreshMs` (100-60000) sets the graphic repaint cadence and replaces `sampling.displayMs` for this mode. 250 ms is a comfortable default; because only changed fields are retransmitted, a ticking clock costs roughly 1.4 KB per second.
 
 ## 5. Stop competing COM-port owners
 

@@ -34,6 +34,12 @@ public static class Program
         try
         {
             options = MonitorOptions.Load(commandLine.ConfigPath);
+            if (options.Display.ResolvedMode == DisplayMode.Graphic || commandLine.Mode == AppMode.LayoutPreview)
+            {
+                // Parse the layout here so a bad file fails with the configuration exit code rather
+                // than crashing later inside the monitor loop.
+                _ = LayoutDocument.Load(options.ResolveLayoutPath());
+            }
         }
         catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
         {
@@ -68,6 +74,7 @@ public static class Program
             {
                 AppMode.Diagnose => await application.DiagnoseAsync(shutdown.Token),
                 AppMode.HardwareTest => await application.HardwareTestAsync(commandLine.NonInteractive, shutdown.Token),
+                AppMode.LayoutPreview => await application.LayoutPreviewAsync(commandLine, shutdown.Token),
                 _ => await application.RunAsync(commandLine.Simulation, shutdown.Token)
             };
         }

@@ -47,10 +47,17 @@ public static class ScreenFormatter
     }
 }
 
+/// <summary>
+/// One entry in the navigation ring. Text mode derives these from <see cref="PageCategory"/>; graphic
+/// mode derives them from layout.json, which is what lets an operator add pages without a rebuild.
+/// </summary>
+public sealed record PageDescriptor(string Id, bool IsShutdown);
+
 public sealed class PageController(
     DisplayOptions options,
     ShutdownOptions shutdownOptions,
-    IShutdownExecutor shutdownExecutor)
+    IShutdownExecutor shutdownExecutor,
+    IReadOnlyList<PageDescriptor>? pages = null)
 {
     private enum PendingShutdownAction
     {
@@ -59,8 +66,14 @@ public sealed class PageController(
         Abort
     }
 
+    private readonly IReadOnlyList<PageDescriptor> _pages = pages is { Count: > 0 }
+        ? pages
+        : Enum.GetValues<PageCategory>()
+            .Select(category => new PageDescriptor(category.ToString(), category == PageCategory.Shutdown))
+            .ToArray();
+
     private readonly object _sync = new();
-    private PageCategory _category = PageCategory.DateTime;
+    private int _pageIndex;
     private DateTimeOffset _nextAuto = DateTimeOffset.MinValue;
     private DateTimeOffset _lastKeyAt = DateTimeOffset.MinValue;
     private ShutdownUiState _shutdownState = ShutdownUiState.Idle;
@@ -69,10 +82,30 @@ public sealed class PageController(
     private DateTimeOffset _shutdownDeadline;
 
     public bool AutoCycle { get; private set; } = options.AutoCycleOnStart;
-    public PageCategory Category => _category;
+
+    /// <summary>
+    /// The built-in category of the current page. Layout-defined pages that do not correspond to a
+    /// built-in category report <see cref="PageCategory.DateTime"/>; graphic mode uses
+    /// <see cref="CurrentPageId"/> instead.
+    /// </summary>
+    public PageCategory Category => Enum.TryParse(_pages[_pageIndex].Id, ignoreCase: true, out PageCategory parsed)
+        ? parsed
+        : PageCategory.DateTime;
+
+    public string CurrentPageId => _pages[_pageIndex].Id;
+    public int CurrentPageIndex => _pageIndex;
     public ShutdownUiState ShutdownState => _shutdownState;
     public bool ConfirmYesSelected => _confirmYes;
     public int PendingSeconds => _pendingSeconds;
+
+    /// <summary>Seconds left on an armed countdown, for layout fields bound to shutdown.remaining.</summary>
+    public int RemainingSeconds(DateTimeOffset now)
+    {
+        lock (_sync)
+        {
+            return Math.Max(0, (int)Math.Ceiling((_shutdownDeadline - now).TotalSeconds));
+        }
+    }
 
     public bool HandleKey(CfaKey key, DateTimeOffset now)
     {
@@ -123,12 +156,12 @@ public sealed class PageController(
         switch (key)
         {
             case CfaKey.Left:
-                _category = Previous(_category);
+                _pageIndex = Previous(_pageIndex);
                 break;
             case CfaKey.Right:
-                _category = Next(_category);
+                _pageIndex = Next(_pageIndex);
                 break;
-            case CfaKey.Enter when _category == PageCategory.Shutdown:
+            case CfaKey.Enter when _pages[_pageIndex].IsShutdown:
                 _shutdownState = ShutdownUiState.Confirm;
                 _confirmYes = false;
                 _pendingSeconds = shutdownOptions.CountdownSeconds;
@@ -139,7 +172,7 @@ public sealed class PageController(
                 break;
             case CfaKey.Exit:
                 AutoCycle = false;
-                _category = PageCategory.DateTime;
+                _pageIndex = 0;
                 break;
             default:
                 return false;
@@ -193,7 +226,7 @@ public sealed class PageController(
 
         action = PendingShutdownAction.Abort;
         _shutdownState = ShutdownUiState.Idle;
-        _category = PageCategory.DateTime;
+        _pageIndex = 0;
         AutoCycle = false;
         return true;
     }
@@ -226,7 +259,7 @@ public sealed class PageController(
 
             // Auto-cycle skips the Shutdown page (it may still advance *off* it when
             // the user parks there with auto-cycle on); manual Left/Right reaches it.
-            _category = NextAutoCycle(_category);
+            _pageIndex = NextAutoCycle(_pageIndex);
 
             _nextAuto = now.AddSeconds(options.AutoCycleSeconds);
             return true;
@@ -241,7 +274,7 @@ public sealed class PageController(
             {
                 ShutdownUiState.Confirm => RenderShutdownConfirm(),
                 ShutdownUiState.CountingDown => RenderShutdownCountdown(snapshot.Timestamp),
-                _ => _category switch
+                _ => Category switch
                 {
                     PageCategory.Network => RenderNetwork(snapshot),
                     PageCategory.Shutdown => RenderShutdownIdle(),
@@ -302,19 +335,21 @@ public sealed class PageController(
         ScreenFormatter.Fit($"Total{ScreenFormatter.Rate(snapshot.ReceiveMbps + snapshot.TransmitMbps),15}")
     ];
 
-    private static readonly int PageCount = Enum.GetValues<PageCategory>().Length;
+    private int Next(int index) => (index + 1) % _pages.Count;
 
-    private static PageCategory Next(PageCategory category) =>
-        (PageCategory)(((int)category + 1) % PageCount);
+    private int Previous(int index) => (index + _pages.Count - 1) % _pages.Count;
 
-    private static PageCategory Previous(PageCategory category) =>
-        (PageCategory)(((int)category + PageCount - 1) % PageCount);
-
-    // Auto-cycle never lands on the Shutdown page; it is reachable only manually.
-    private static PageCategory NextAutoCycle(PageCategory category)
+    // Auto-cycle never lands on a Shutdown page; it is reachable only manually. The guard bounds the
+    // walk so a layout consisting solely of shutdown pages cannot spin here.
+    private int NextAutoCycle(int index)
     {
-        PageCategory next = Next(category);
-        return next == PageCategory.Shutdown ? Next(next) : next;
+        int candidate = Next(index);
+        for (int guard = 0; guard < _pages.Count && _pages[candidate].IsShutdown; guard++)
+        {
+            candidate = Next(candidate);
+        }
+
+        return candidate;
     }
 }
 

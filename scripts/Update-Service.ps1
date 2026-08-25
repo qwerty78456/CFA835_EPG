@@ -23,7 +23,7 @@ if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
 }
 
 & $NssmPath stop $serviceName | Out-Null
-Get-ChildItem -LiteralPath $RuntimePath -Force | Where-Object Name -NotIn @('Install-Service.ps1', 'Update-Service.ps1', 'Uninstall-Service.ps1', 'appsettings.json') | ForEach-Object {
+Get-ChildItem -LiteralPath $RuntimePath -Force | Where-Object Name -NotIn @('Install-Service.ps1', 'Update-Service.ps1', 'Uninstall-Service.ps1', 'appsettings.json', 'layout.json') | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $InstallPath -Recurse -Force
 }
 & $NssmPath start $serviceName | Out-Null

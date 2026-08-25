@@ -30,10 +30,18 @@ public sealed class MonitorApplication
         }
 
         CfaDeviceLocator locator = new(_options.Device);
+
+        // Layout parsing, font rasterization and PNG decoding happen once, outside the reconnect
+        // loop: none of it depends on the device and all of it is expensive.
+        GraphicRuntime? graphic = _options.Display.ResolvedMode == DisplayMode.Graphic
+            ? GraphicRuntime.Create(_options, _loggerFactory)
+            : null;
+
         PageController pages = new(
             _options.Display,
             _options.Shutdown,
-            new WindowsShutdownExecutor(_loggerFactory.CreateLogger<WindowsShutdownExecutor>()));
+            new WindowsShutdownExecutor(_loggerFactory.CreateLogger<WindowsShutdownExecutor>()),
+            graphic?.Layout.Descriptors());
         int retrySeconds = 1;
 
         while (!cancellationToken.IsCancellationRequested)
@@ -41,6 +49,10 @@ public sealed class MonitorApplication
             ICfaTransport transport = new SerialCfaTransport(_loggerFactory.CreateLogger<SerialCfaTransport>());
             await using Cfa835Device device = new(transport, _loggerFactory.CreateLogger<Cfa835Device>());
             ScreenWriter screen = new();
+            GraphicScreenWriter? graphicScreen = graphic is null
+                ? null
+                : new GraphicScreenWriter(
+                    graphic.Composer, graphic.Layout, _loggerFactory.CreateLogger<GraphicScreenWriter>());
             LedStateMachine leds = new(_options.Thermal);
             int forceRender = 1;
 
@@ -50,6 +62,11 @@ public sealed class MonitorApplication
                 string version = await device.OpenAsync(port, enableKeyReports: true, cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation("Connected to {Version} on {Port}", version, port);
                 retrySeconds = 1;
+
+                if (graphicScreen is not null)
+                {
+                    await graphicScreen.InitializeAsync(device, cancellationToken).ConfigureAwait(false);
+                }
 
                 device.KeyPressed += key =>
                 {
@@ -72,8 +89,28 @@ public sealed class MonitorApplication
 
                     if (now >= nextDisplay || Interlocked.Exchange(ref forceRender, 0) == 1)
                     {
-                        await screen.RenderAsync(device, pages.Render(snapshot, _options.Thermal), cancellationToken).ConfigureAwait(false);
-                        nextDisplay = now.AddMilliseconds(_options.Sampling.DisplayMs);
+                        if (graphic is not null && graphicScreen is not null)
+                        {
+                            FieldContext context = new(
+                                snapshot,
+                                pages.AutoCycle,
+                                pages.ShutdownState,
+                                pages.ConfirmYesSelected,
+                                pages.PendingSeconds,
+                                pages.RemainingSeconds(now));
+                            await graphicScreen.RenderAsync(
+                                device,
+                                graphic.Page(pages.CurrentPageId),
+                                context,
+                                now,
+                                cancellationToken).ConfigureAwait(false);
+                            nextDisplay = now.AddMilliseconds(graphic.Layout.RefreshMs);
+                        }
+                        else
+                        {
+                            await screen.RenderAsync(device, pages.Render(snapshot, _options.Thermal), cancellationToken).ConfigureAwait(false);
+                            nextDisplay = now.AddMilliseconds(_options.Sampling.DisplayMs);
+                        }
                     }
 
                     IReadOnlyList<LedColor> states = leds.Evaluate(snapshot);
@@ -105,7 +142,7 @@ public sealed class MonitorApplication
                 {
                     if (device.IsOpen)
                     {
-                        await device.BlankAndTurnOffAsync(cleanup.Token).ConfigureAwait(false);
+                        await device.BlankAndTurnOffAsync(cleanup.Token, graphic is not null).ConfigureAwait(false);
                     }
                 }
                 catch (Exception exception)
@@ -121,6 +158,105 @@ public sealed class MonitorApplication
         }
 
         _logger.LogInformation("CFA835 monitor stopped");
+        return 0;
+    }
+
+    /// <summary>
+    /// Pushes the first layout page to the panel, then outlines every field rectangle so box
+    /// alignment against the artwork can be judged on real hardware.
+    /// </summary>
+    private async Task GraphicHardwareStepAsync(Cfa835Device device, CancellationToken cancellationToken)
+    {
+        GraphicRuntime runtime = GraphicRuntime.Create(_options, _loggerFactory);
+        LayoutPage page = runtime.Layout.Pages[0];
+        FieldContext context = new(
+            MetricSnapshot.Empty(DateTimeOffset.Now),
+            AutoCycle: false,
+            ShutdownUiState.Idle,
+            ConfirmYesSelected: false,
+            _options.Shutdown.CountdownSeconds,
+            _options.Shutdown.CountdownSeconds);
+
+        await device.ClearDisplayAsync(cancellationToken).ConfigureAwait(false);
+        await device.SetGraphicOptionsAsync(true, runtime.Layout.GammaCorrection, cancellationToken).ConfigureAwait(false);
+
+        byte[] frame = runtime.Composer.ComposeFullFrame(page, context);
+        await device.SendImageAsync(
+            0,
+            0,
+            Cfa835Device.DisplayWidth,
+            Cfa835Device.DisplayHeight,
+            frame,
+            transparency: false,
+            invert: false,
+            cancellationToken).ConfigureAwait(false);
+        await device.FlushBufferAsync(cancellationToken).ConfigureAwait(false);
+        Console.WriteLine(
+            $"Graphic page '{page.Id}' pushed: {frame.Length} bytes, font {runtime.Glyphs.FontFamily}");
+        await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
+
+        foreach (LayoutField field in page.FieldsFor(ShutdownUiState.Idle))
+        {
+            await device.DrawRectangleAsync(
+                field.X, field.Y, field.Width, field.Height, 248, 0, cancellationToken).ConfigureAwait(false);
+        }
+
+        await device.FlushBufferAsync(cancellationToken).ConfigureAwait(false);
+        Console.WriteLine("Field rectangles outlined; compare them against the background artwork.");
+        await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Renders one layout page to a PNG without touching the CFA835. This is how the display layout
+    /// gets tuned: edit layout.json, re-run, look at the image.
+    /// </summary>
+    public async Task<int> LayoutPreviewAsync(CommandLineOptions commandLine, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        GraphicRuntime runtime = GraphicRuntime.Create(_options, _loggerFactory);
+        LayoutPage page = commandLine.PreviewPage is null
+            ? runtime.Layout.Pages[0]
+            : runtime.Page(commandLine.PreviewPage);
+
+        MetricSnapshot snapshot;
+        try
+        {
+            using WindowsMetricSource metrics = new(_options, _loggerFactory);
+            // CPU% and the PDH-based counters are deltas, so a single sample would preview as 0.
+            _ = metrics.Sample(DateTimeOffset.Now);
+            await Task.Delay(Math.Max(1000, _options.Sampling.TemperatureMs), cancellationToken).ConfigureAwait(false);
+            snapshot = metrics.Sample(DateTimeOffset.Now);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(exception, "Could not read live metrics; previewing with an empty snapshot");
+            snapshot = MetricSnapshot.Empty(DateTimeOffset.Now);
+        }
+
+        FieldContext context = new(
+            snapshot,
+            AutoCycle: false,
+            ShutdownUiState.Idle,
+            ConfirmYesSelected: false,
+            _options.Shutdown.CountdownSeconds,
+            _options.Shutdown.CountdownSeconds);
+
+        byte[] frame = runtime.Composer.ComposeFullFrame(page, context);
+        string output = commandLine.PreviewPath
+            ?? Path.Combine(Environment.CurrentDirectory, $"layout-preview-{page.Id}.png");
+        GrayscaleImage.SavePng(frame, output, commandLine.PreviewScale);
+
+        Console.WriteLine($"Font: {runtime.Glyphs.FontFamily}");
+        Console.WriteLine($"Page: '{page.Id}' [{page.Kind}], background {page.BackgroundPath ?? "(none)"}");
+        foreach (LayoutField field in page.FieldsFor(ShutdownUiState.Idle))
+        {
+            Console.WriteLine(
+                $"  {field.Source,-22} x={field.X,3} y={field.Y,3} {field.Width,3}x{field.Height,-3} " +
+                $"{field.SizePx}px {field.Align} shade {field.Shade}");
+        }
+
+        Console.WriteLine(
+            $"Preview written to {output} ({GrayscaleImage.Width}x{GrayscaleImage.Height} at {commandLine.PreviewScale}x)");
         return 0;
     }
 
@@ -152,6 +288,34 @@ public sealed class MonitorApplication
         {
             failures++;
             Console.WriteLine($"Display: ERROR - {exception.Message}");
+        }
+
+        Console.WriteLine($"Display mode: {_options.Display.ResolvedMode.ToString().ToLowerInvariant()}");
+        string layoutPath = _options.ResolveLayoutPath();
+        if (_options.Display.ResolvedMode == DisplayMode.Graphic || File.Exists(layoutPath))
+        {
+            try
+            {
+                LayoutDocument layout = LayoutDocument.Load(layoutPath);
+                Console.WriteLine(
+                    $"Layout: {layoutPath} (refresh {layout.RefreshMs} ms, font chain {string.Join(" > ", layout.FontFamilies)})");
+                foreach (LayoutPage page in layout.Pages)
+                {
+                    string background = page.BackgroundPath ?? "(none)";
+                    Console.WriteLine($"  page '{page.Id}' [{page.Kind}] background {background}");
+                    foreach (LayoutField field in page.Fields)
+                    {
+                        Console.WriteLine(
+                            $"    {field.Source,-22} x={field.X,3} y={field.Y,3} {field.Width,3}x{field.Height,-3} " +
+                            $"{field.SizePx}px {field.Align}");
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                failures++;
+                Console.WriteLine($"Layout: ERROR - {exception.Message}");
+            }
         }
 
         try
@@ -270,6 +434,11 @@ public sealed class MonitorApplication
                 }
             }
 
+            if (_options.Display.ResolvedMode == DisplayMode.Graphic)
+            {
+                await GraphicHardwareStepAsync(device, cancellationToken).ConfigureAwait(false);
+            }
+
             await writer.RenderAsync(device,
             [
                 "KEYPAD TEST",
@@ -301,6 +470,14 @@ public sealed class MonitorApplication
             using CancellationTokenSource restore = new(TimeSpan.FromSeconds(5));
             try
             {
+                if (_options.Display.ResolvedMode == DisplayMode.Graphic)
+                {
+                    // The graphic buffer cannot be read back, so the honest restore is a clear plus a
+                    // return to automatic flushing before the saved text rows go out.
+                    await device.ClearDisplayAsync(restore.Token).ConfigureAwait(false);
+                    await device.SetGraphicOptionsAsync(false, false, restore.Token).ConfigureAwait(false);
+                }
+
                 for (int row = 0; row < 4; row++)
                 {
                     await device.WriteRowAsync(row, savedRows[row], restore.Token).ConfigureAwait(false);

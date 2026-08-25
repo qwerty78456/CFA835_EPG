@@ -2,6 +2,43 @@
 
 All notable changes are recorded here in reverse chronological order. Dates use the builder's local calendar date; `COMMIT.txt` in each release folder is the authoritative source revision.
 
+## 2026-08-25
+
+### Graphic display mode
+
+- Added `display.mode`. The default `text` keeps the existing 20x4 character rendering unchanged; `graphic` drives the CFA835's 244x68 monochrome/greyscale panel directly.
+- Added `layout.json`: a separate, operator-editable file describing pages, an optional per-page 244x68 background image, and every text box by pixel rectangle, font size, alignment, and greyscale shade.
+- Pages are now data, not an enum. Adding an entry to `layout.pages` adds a page to the keypad navigation ring; `"kind": "shutdown"` keeps a page out of auto-cycling exactly as the built-in shutdown page always has been.
+- Bound layout fields to `datetime`, `cpu.utilization`, `cpu.temperature`, `system.temperature`, `net.rx`, `net.tx`, `net.total`, `autocycle`, the three shutdown values, and static `literal` text, each with its own format string and null placeholder.
+- Shipped a default layout matching the approved mock-up: large `HH:mm:ss` over small `dd/MM/yyyy` in the upper box, CPU utilization and CPU temperature in the two lower boxes, no labels.
+- Made the refresh cadence configurable in milliseconds through `layout.refreshMs`, independent of `sampling.displayMs`.
+
+### Rendering
+
+- Composited background artwork and text on the host and sent the module finished pixel rectangles, so a text box sits on arbitrary artwork without relying on device-side transparency, and no microSD card or on-device font file is required.
+- Rasterized every printable ASCII character once per configured size into a glyph atlas at start-up, keeping GDI+ out of the per-frame path.
+- Gave digits a shared tabular advance so a running clock does not jitter and each field's transfer rectangle stays a fixed size.
+- Diffed at field level: a field is retransmitted only when its formatted text changes, so a ticking clock costs roughly 1.4 KB per second instead of the full 16.6 KB frame.
+- Quantized every pixel to the panel's 32 shades, which also guarantees the pixel stream can never contain `0x03`, the RLE escape byte in command 40 subcommand 2.
+- Repainted the whole frame every `layout.fullRepaintSeconds` because the raw pixel stream is not CRC-protected and a corrupted rectangle would otherwise persist.
+
+### Device protocol
+
+- Added `ICfaTransport.SendStreamingCommandAsync` for command 40 subcommand 2, whose acknowledgement only arrives after the un-packetized pixel stream. Its timeout scales with payload size and it deliberately never retries, since a retried command packet would be consumed as pixel data.
+- Added typed wrappers for command 6 (clear display) and command 40 subcommands 0, 1, 2, 5, and 7.
+- Used manual buffer flush in graphic mode so a frame is never shown half-drawn.
+
+### Diagnostics
+
+- Added `--layout-preview [file]`, `--preview-page <id>`, and `--preview-scale <1-16>`, which render a layout page to a PNG with live metrics and no CFA835 attached.
+- Extended `--diagnose` to print the resolved display mode and every layout page, background path, and field rectangle.
+- Extended `--hardware-test` to push the first graphic page and then outline each field rectangle, so box alignment against the artwork can be judged on the physical panel.
+- Validated the layout at start-up so a bad file exits with the configuration exit code 78 instead of failing inside the monitor loop.
+
+### Dependencies
+
+- Added `System.Drawing.Common` for PNG decoding and font rasterization. GDI+ ships with Windows, so the self-contained publish gains no native payload.
+
 ## 2026-08-24
 
 ### Display and navigation

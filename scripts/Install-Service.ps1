@@ -38,6 +38,13 @@ if (-not (Test-Path -LiteralPath $configPath)) {
     Copy-Item -LiteralPath (Join-Path $InstallPath 'appsettings.json') -Destination $configPath
 }
 
+# The service is launched with --config pointing at $DataPath, so graphic mode resolves layout.json
+# (and any background artwork it names) from there. Seed it once and never overwrite operator edits.
+$layoutPath = Join-Path $DataPath 'layout.json'
+if (-not (Test-Path -LiteralPath $layoutPath)) {
+    Copy-Item -LiteralPath (Join-Path $InstallPath 'layout.json') -Destination $layoutPath
+}
+
 $installedExe = Join-Path $InstallPath 'Cfa835SystemMonitor.exe'
 if (-not $existing) {
     & $NssmPath install $serviceName $installedExe | Out-Null
