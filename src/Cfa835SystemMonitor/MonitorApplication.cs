@@ -162,6 +162,25 @@ public sealed class MonitorApplication
     }
 
     /// <summary>
+    /// Whether this process can open ring-0 helper devices such as PawnIO. The service runs as
+    /// LocalSystem and is always elevated; interactive diagnostic runs frequently are not.
+    /// </summary>
+    private static bool IsElevated()
+    {
+        try
+        {
+            using System.Security.Principal.WindowsIdentity identity =
+                System.Security.Principal.WindowsIdentity.GetCurrent();
+            return new System.Security.Principal.WindowsPrincipal(identity)
+                .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Pushes the first layout page to the panel, then outlines every field rectangle so box
     /// alignment against the artwork can be judged on real hardware.
     /// </summary>
@@ -272,6 +291,7 @@ public sealed class MonitorApplication
         Console.WriteLine("CFA835 System Monitor diagnostics");
         Console.WriteLine($"OS: {Environment.OSVersion}");
         Console.WriteLine($"Process: {System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
+        Console.WriteLine($"Elevated: {IsElevated()}");
         Console.WriteLine($"Configuration: {_options.Device.Vid}:{_options.Device.Pid}, serial {_options.Device.Serial}, fallback {_options.Device.FallbackPort}");
 
         int failures = 0;
@@ -348,6 +368,15 @@ public sealed class MonitorApplication
             if (!metrics.IsPawnIoInstalled)
             {
                 Console.WriteLine("WARNING: install the signed PawnIO driver before service acceptance testing.");
+            }
+            else if (!IsElevated())
+            {
+                // The registry key only proves the driver is installed. Opening
+                // \\?\GLOBALROOT\Device\PawnIO additionally requires elevation, so an unelevated
+                // diagnostic reports "installed" and still sees no CPU temperature. The service
+                // itself runs as LocalSystem and is unaffected.
+                Console.WriteLine(
+                    "WARNING: PawnIO is installed but this process is not elevated, so CPU temperature is unavailable. Re-run from an elevated shell.");
             }
         }
         catch (Exception exception)

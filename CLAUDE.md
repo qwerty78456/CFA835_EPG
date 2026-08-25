@@ -111,10 +111,14 @@ Key design points:
 
 `tests/Cfa835SystemMonitor.Tests` covers the protocol (`ProtocolTests.cs`: CRC vectors, fragmented/resynchronizing parsing, device command mapping and the `0x28` subcommands via a hand-written `FakeTransport`), display/paging (`DisplayTests.cs`, including layout-driven page rings), layout parsing and validation (`LayoutTests.cs`), graphic composition and DPI-independent background loading (`GraphicRenderingTests.cs`), argument parsing (`CommandLineTests.cs`), and metrics/LED policy (`MetricsAndLedTests.cs`). No mocking framework is used — fakes are small hand-rolled classes implementing the relevant interface (`ICfaTransport`, `INetworkCounterProvider`, `IGlyphSource`, etc.). `GraphicRenderingTests` composes against a deterministic block-font `IGlyphSource` so assertions are byte-exact and GDI+ stays out of most of the run; the two tests that do exercise `GdiGlyphSource` deliberately request an unknown family so they fall back to generic sans-serif and do not depend on which fonts a machine has installed.
 
+## Licensing
+
+The project is MIT (`LICENSE`). `third-party/pawnio/` redistributes the **PawnIO 2.2.0** signed driver installer under **GPLv2 with a device-IOCTL exception**, alongside `COPYING` and the corresponding source archive — the source is what satisfies GPLv2 §3, so **never ship the installer without the rest of that directory**. The exception applies because this app reaches the driver solely through its IOCTL interface (via `LibreHardwareMonitorLib`) and never loads a module over the Pawn interface; that is what keeps the project MIT rather than GPL. Do not modify `PawnIO_setup.exe` — any byte change, including a line-ending rewrite, voids its Authenticode signature and Windows will refuse to load the driver. `.gitattributes` marks `*.exe` binary for exactly this reason. When bumping the version, update the binary, the source archive, `COPYING`, and the hash table in `third-party/pawnio/README.md` together.
+
 ## Runtime prerequisites (not needed to build/test, only to run against real hardware)
 
 1. Crystalfontz CFA735/835 USB virtual-COM driver.
-2. Signed normal-edition PawnIO 2.2.0 (temperature sensor access via LibreHardwareMonitor).
+2. Signed normal-edition PawnIO 2.2.0 (temperature sensor access via LibreHardwareMonitor). Bundled at `third-party/pawnio/PawnIO_setup.exe` and installed by `Install-Service.ps1` when absent, which verifies the Authenticode signer is `CN=namazso.eu` first and refuses otherwise. Bundling removes the download, **not** the install: it is a kernel driver, so it needs an admin-registered service and a Microsoft-attested signature. The PawnIO *modules* are already embedded in `LibreHardwareMonitorLib.dll`, so the driver is the only missing piece.
 3. NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe` for the Windows service scripts (`scripts/Install-Service.ps1`, `Update-Service.ps1`, `Uninstall-Service.ps1`).
 
 See `DEPLOYMENT.md` for artifact validation, foreground and service installation, update/rollback, remote Windows building, live-process verification, and physical CFA835 acceptance.

@@ -3,11 +3,29 @@ param(
     [string]$RuntimePath = $PSScriptRoot,
     [string]$NssmPath = 'C:\Program Files\nssm\win64\nssm.exe',
     [string]$InstallPath = 'C:\Program Files\Cfa835SystemMonitor',
-    [string]$DataPath = 'C:\ProgramData\Cfa835SystemMonitor'
+    [string]$DataPath = 'C:\ProgramData\Cfa835SystemMonitor',
+    [switch]$SkipPawnIO
 )
 
 $ErrorActionPreference = 'Stop'
 $serviceName = 'Cfa835SystemMonitor'
+
+function Get-PawnIOVersion {
+    # Same key LibreHardwareMonitor and Cfa835SystemMonitor probe, checked in both registry views.
+    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+        try {
+            $key = $base.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO')
+            if ($key) {
+                try { return [string]($key.GetValue('DisplayVersion', 'unknown version')) } finally { $key.Dispose() }
+            }
+        } finally {
+            $base.Dispose()
+        }
+    }
+
+    return $null
+}
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -43,6 +61,49 @@ if (-not (Test-Path -LiteralPath $configPath)) {
 $layoutPath = Join-Path $DataPath 'layout.json'
 if (-not (Test-Path -LiteralPath $layoutPath)) {
     Copy-Item -LiteralPath (Join-Path $InstallPath 'layout.json') -Destination $layoutPath
+}
+
+# CPU temperature needs ring-0 register access, which LibreHardwareMonitor obtains by opening the
+# kernel device \\?\GLOBALROOT\Device\PawnIO. That device only exists while the PawnIO driver service
+# is loaded, so a kernel driver has to be installed by an administrator; bundling the installer
+# removes the download, not the installation. Without it cpu.temperature renders its fallback text
+# and the thermal-warning LED never arms. This applies equally to Intel and AMD.
+$pawnVersion = Get-PawnIOVersion
+if ($pawnVersion) {
+    Write-Host "PawnIO already installed: $pawnVersion"
+}
+elseif ($SkipPawnIO) {
+    Write-Warning 'PawnIO is not installed and -SkipPawnIO was passed. CPU temperature will be unavailable.'
+}
+else {
+    $pawnSetup = Join-Path $RuntimePath 'third-party\pawnio\PawnIO_setup.exe'
+    if (-not (Test-Path -LiteralPath $pawnSetup -PathType Leaf)) {
+        Write-Warning "PawnIO is not installed and no bundled installer was found at '$pawnSetup'. Install it from https://pawnio.eu/ or CPU temperature will be unavailable."
+    }
+    else {
+        # The signature is what makes this binary trustworthy, not its presence in the release, and
+        # an unsigned or tampered kernel driver must never be launched. Refuse rather than warn.
+        $signature = Get-AuthenticodeSignature -LiteralPath $pawnSetup
+        if ($signature.Status -ne 'Valid') {
+            throw "Refusing to run '$pawnSetup': Authenticode status is '$($signature.Status)' ($($signature.StatusMessage))."
+        }
+
+        $subject = [string]$signature.SignerCertificate.Subject
+        if ($subject -notmatch 'CN=namazso\.eu') {
+            throw "Refusing to run '$pawnSetup': unexpected signer '$subject'."
+        }
+
+        Write-Host "Installing PawnIO from the bundled installer, signed by: $subject"
+        Write-Host 'Complete the wizard when it appears. Choose the signed edition, not the unrestricted one.'
+        $process = Start-Process -FilePath $pawnSetup -Wait -PassThru
+        $pawnVersion = Get-PawnIOVersion
+        if ($pawnVersion) {
+            Write-Host "PawnIO installed: $pawnVersion"
+        }
+        else {
+            Write-Warning "The PawnIO installer exited with code $($process.ExitCode) and the driver is still not registered. CPU temperature will be unavailable until it is installed."
+        }
+    }
 }
 
 $installedExe = Join-Path $InstallPath 'Cfa835SystemMonitor.exe'

@@ -4,3 +4,13 @@
 *.csproj text eol=lf
 *.props text eol=lf
 *.json text eol=lf
+
+# Redistributed third-party payloads and reference material. Marked binary so `text=auto` can never
+# rewrite line endings inside them: a single altered byte invalidates the installer's Authenticode
+# signature, and Windows refuses to load an unsigned kernel driver.
+*.exe binary
+*.zip binary
+*.pdf binary
+*.png binary
+*.bin binary
+*.sys binary

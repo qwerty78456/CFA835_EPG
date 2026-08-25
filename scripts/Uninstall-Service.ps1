@@ -32,4 +32,8 @@ if ($RemoveFiles) {
     }
 }
 
+# PawnIO is a system-wide kernel driver that other tools (Fan Control, LibreHardwareMonitor itself,
+# hardware monitors generally) may also be using, so removing it here could break them. Uninstall it
+# from Apps & features if it is genuinely no longer wanted.
 Write-Host 'PawnIO and C:\ProgramData\Cfa835SystemMonitor were intentionally preserved.'
+Write-Host 'Remove PawnIO separately via Apps & features only if no other tool depends on it.'

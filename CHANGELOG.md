@@ -2,6 +2,27 @@
 
 All notable changes are recorded here in reverse chronological order. Dates use the builder's local calendar date; `COMMIT.txt` in each release folder is the authoritative source revision.
 
+## 2026-08-25 — Open source licensing and bundled PawnIO
+
+### Added
+
+- Added an MIT `LICENSE` for the project.
+- Bundled the signed **PawnIO 2.2.0** driver installer at `third-party/pawnio/`, so a monitored machine — including an air-gapped one — no longer needs to download it. `Install-Service.ps1` detects the driver through the registry key LibreHardwareMonitor itself uses and runs the bundled installer when it is missing; `-SkipPawnIO` declines.
+- The install script verifies the installer's Authenticode signature before launching it and refuses unless the status is `Valid` and the signer is `CN=namazso.eu`. `Build-Release.ps1` performs the same check when packaging, so a tampered binary fails the build rather than reaching a release.
+- Shipped `COPYING` (GPLv2) and the corresponding PawnIO source archive for tag `2.2.0` alongside the binary, satisfying GPLv2 section 3(a) without a separate written offer. `third-party/pawnio/README.md` records every SHA-256, the upstream commit, and the verified signer.
+- Marked `*.exe`, `*.zip`, `*.pdf`, `*.png`, `*.bin` and `*.sys` as binary in `.gitattributes`. The repository's `text=auto` rule would otherwise be free to rewrite line endings inside the installer, and a single changed byte voids its signature.
+- `Build-Release.ps1` now copies `third-party/` and `LICENSE` into each release, and every bundled file appears in `SHA256SUMS.txt`.
+
+### Diagnostics
+
+- `--diagnose` now prints an `Elevated:` line, and warns when PawnIO is installed but the process is not elevated. The registry key only proves the driver is registered; opening `\\?\GLOBALROOT\Device\PawnIO` additionally requires elevation, so an unelevated run previously reported `PawnIO: installed` alongside a missing CPU temperature with nothing to explain the contradiction. The service runs as LocalSystem and was never affected.
+
+### Notes
+
+- Bundling removes the download, not the installation. PawnIO is a kernel-mode driver: LibreHardwareMonitor reaches CPU temperatures by opening `\\?\GLOBALROOT\Device\PawnIO`, which exists only while the driver service is loaded, and loading one requires an administrator plus a Microsoft-attested signature. The PawnIO *modules* were already embedded in `LibreHardwareMonitorLib.dll`, so the driver was the only missing piece.
+- Cfa835SystemMonitor communicates with PawnIO solely through its device IO control interface, by way of `LibreHardwareMonitorLib`, and never loads a module over the Pawn interface. PawnIO's special exception therefore applies and the project's MIT licence is unaffected.
+- `Uninstall-Service.ps1` still leaves PawnIO in place, and now says why: other hardware-monitoring tools on the same machine may depend on the driver.
+
 ## 2026-08-25 — Background DPI fix
 
 ### Fixed

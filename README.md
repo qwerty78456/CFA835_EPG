@@ -84,11 +84,41 @@ The keypad model is identical in graphic mode; only the rendering differs. Left/
 
 1. Windows 10 or later on x64.
 2. Crystalfontz CFA735/835 USB virtual-COM driver.
-3. Signed normal-edition PawnIO 2.2.0 for LibreHardwareMonitor low-level sensor access.
+3. Signed normal-edition PawnIO 2.2.0 for LibreHardwareMonitor low-level sensor access. **The signed installer ships in `third-party/pawnio/`**, and `Install-Service.ps1` runs it automatically when the driver is absent, so no download is needed on the monitored machine. Pass `-SkipPawnIO` to decline. See [Why PawnIO is still an install step](#why-pawnio-is-still-an-install-step).
 4. NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe` when installing as a service.
 5. For graphic mode only: the font families named in `layout.fontFamilies` installed on the monitored machine. The first installed family wins; if none is present the app logs a warning and falls back to generic sans-serif. `Bahnschrift SemiLight` ships with Windows 10 and later as a named instance of the `bahnschrift.ttf` variable font, and Windows exposes it to GDI+ as its own family name.
 
 The runtime is a self-contained `win-x64` publish and does not require a separately installed .NET runtime. `System.Drawing.Common` is included for PNG decoding and font rasterization; it wraps GDI+, which is part of Windows, so the release gains no native payload.
+
+### Why PawnIO is still an install step
+
+CPU temperatures live in ring-0 registers — MSR on Intel, SMN/MSR on AMD. `LibreHardwareMonitorLib`
+reaches them by opening the kernel device `\\?\GLOBALROOT\Device\PawnIO`, which exists only while the
+PawnIO driver service is loaded. A kernel-mode driver cannot run from an application folder: it has
+to be registered as a system service by an administrator, and on x64 Windows with driver signature
+enforcement it must carry a Microsoft-attested signature.
+
+Bundling therefore removes the download and the version guesswork, not the installation. The PawnIO
+*modules* (`IntelMSR.bin`, `AMDFamily17.bin`, `LpcIO.bin`, and others) are already embedded inside
+`LibreHardwareMonitorLib.dll`, so the driver is the only missing piece.
+
+Without it, `--diagnose` reports `PawnIO: NOT INSTALLED`, `cpu.temperature` renders its `fallback`
+text, and the thermal-warning LED never arms. This is identical on Intel and AMD; a CPU-vendor
+difference between a build workstation and the monitored machine is never the explanation.
+
+Installing the driver is necessary but not sufficient for an *interactive* run: opening
+`\\?\GLOBALROOT\Device\PawnIO` also requires **elevation**. An unelevated `--diagnose` therefore
+prints `PawnIO: installed` and still shows no CPU temperature; it prints an `Elevated:` line and
+warns when that happens. The installed service runs as LocalSystem, so this affects only
+`--diagnose` and `--layout-preview` from an ordinary shell.
+
+`Install-Service.ps1` verifies the bundled installer's Authenticode signature and refuses to launch
+it unless the status is `Valid` and the signer is `CN=namazso.eu`. When prompted by the wizard,
+choose the **signed** edition — the "unrestricted" edition is unsigned and requires disabling driver
+signature enforcement, which is not appropriate for a monitored production machine.
+
+PawnIO is GPLv2 with a device-IOCTL exception; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
+and `third-party/pawnio/README.md` for the obligations that come with redistributing it.
 
 ## Release builds
 
@@ -130,3 +160,13 @@ dotnet test .\Cfa835SystemMonitor.slnx -c Release --no-restore
 When intentionally changing dependencies, restore once without `--locked-mode`, review both generated `packages.lock.json` files, and commit them. Locked restore is required for ordinary builds and releases.
 
 The protocol implementation follows the Crystalfontz CFA835 hardware v2.0/firmware v1.6 datasheet and does not write boot-state EEPROM settings.
+
+## License
+
+Cfa835SystemMonitor is released under the [MIT License](LICENSE).
+
+Redistributed third-party components keep their own licences. In particular `third-party/pawnio/`
+contains the PawnIO 2.2.0 driver installer under GPLv2 with a device-IOCTL exception, shipped
+together with its corresponding source as GPLv2 section 3 requires. See
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the full list and
+`third-party/pawnio/README.md` for provenance, hashes, and the verified signature.

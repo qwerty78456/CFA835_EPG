@@ -28,7 +28,17 @@ Install these before launching the application:
 
 1. Windows 10 or later, x64.
 2. The Crystalfontz USB virtual-COM driver for CFA735/CFA835 devices.
-3. Signed normal-edition PawnIO 2.2.0. LibreHardwareMonitor uses PawnIO for primary low-level temperature access.
+3. Signed normal-edition PawnIO 2.2.0. LibreHardwareMonitor uses PawnIO for primary low-level temperature access. **The signed installer ships inside the release at `third-party\pawnio\PawnIO_setup.exe`**, so an air-gapped machine needs no download. `Install-Service.ps1` detects the driver and runs that installer when it is missing; pass `-SkipPawnIO` to decline.
+
+   Bundling removes the download, not the installation: PawnIO is a kernel-mode driver, so it must be registered as a system service by an administrator and must keep its Microsoft-attested signature. In the wizard choose the **signed** edition — the "unrestricted" edition is unsigned and requires disabling driver signature enforcement, which is not acceptable on a monitored machine.
+
+   The install script refuses to launch the installer unless its Authenticode status is `Valid` and the signer is `CN=namazso.eu`. Verify by hand at any time:
+
+   ```powershell
+   Get-AuthenticodeSignature .\third-party\pawnio\PawnIO_setup.exe | Format-List Status, SignerCertificate
+   ```
+
+   PawnIO is GPLv2 with a device-IOCTL exception. `third-party\pawnio\` also carries `COPYING` and the corresponding source archive, which together satisfy GPLv2 section 3. Keep the whole directory together when copying a release onto removable media.
 4. For service mode only, NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe`, or pass an alternate `-NssmPath`.
 5. For graphic mode only, the font families named in `layout.fontFamilies`. The default chain is `Bahnschrift SemiLight` then `Times New Roman`, both of which ship with Windows 10 and later. Verify before deployment rather than discovering a silent fallback on the panel:
 
@@ -171,9 +181,12 @@ With no monitor process or service holding the COM port:
 if ($LASTEXITCODE -ne 0) { throw "Diagnostics failed with exit code $LASTEXITCODE" }
 ```
 
+Run it **from an elevated shell**. Opening the PawnIO device requires elevation, so an unelevated diagnostic reports `PawnIO: installed` and still shows no CPU temperature. The diagnostic prints an `Elevated:` line and warns when that is the situation. The service itself runs as LocalSystem and is always elevated, so this affects interactive runs only.
+
 A passing diagnostic must report all of the following:
 
 - `Opened CFA835 transport on <COM port>`;
+- `Elevated: True`;
 - a CFA835 firmware/hardware version;
 - the four rows read directly from CFA835 display RAM;
 - PawnIO installation state;
@@ -340,7 +353,12 @@ After transfer, re-run section 3 on the monitored machine. Network transfer succ
 
 ### Temperature is `N/A`
 
-- Confirm PawnIO normal edition is installed and readable by the process identity. `PawnIO installed: False` in the log is the usual answer on its own: without ring-0 access LibreHardwareMonitor cannot read CPU temperatures on **either** AMD or Intel, so a CPU-vendor difference between the build workstation and the monitored machine is not the explanation.
+- **Check `Elevated:` first.** `PawnIO: installed` only proves the driver is registered; opening `\\?\GLOBALROOT\Device\PawnIO` additionally requires elevation, and an unelevated process gets `Access is denied`. `PawnIO: installed` together with `Elevated: False` and a missing CPU temperature is that case, not a driver fault — re-run from an elevated shell. The installed service runs as LocalSystem, so this only ever affects interactive `--diagnose` and `--layout-preview` runs.
+- Confirm PawnIO normal edition is installed and readable by the process identity. `PawnIO installed: False` in the log is the usual answer on its own: without ring-0 access LibreHardwareMonitor cannot read CPU temperatures on **either** AMD or Intel, so a CPU-vendor difference between the build workstation and the monitored machine is not the explanation. Install it from the bundled `third-party\pawnio\PawnIO_setup.exe`, or re-run `Install-Service.ps1`, which does the same. Confirm afterwards that the driver service is actually loaded, not merely that the installer ran:
+
+  ```powershell
+  Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO' | Select-Object DisplayName, DisplayVersion
+  ```
 - Run `--diagnose` with the monitor stopped.
 - Review stdout/stderr logs for LibreHardwareMonitor inventory or access errors.
 - **The Windows ACPI thermal-zone fallback does not feed a `cpu.temperature` field.** `Windows ACPI thermal-zone fallback initialized with N counter(s)` only means the counters opened. Those readings carry `IsCpu = false` and are consulted solely for the text-mode `TEMPERATURE` row and the `system.temperature` layout source; `cpu.temperature` and the thermal-warning LED come from LibreHardwareMonitor CPU sensors only. A machine with a working ACPI zone but no PawnIO therefore shows a system temperature and `N/A` for CPU temperature, which is correct behaviour, not a fault.
