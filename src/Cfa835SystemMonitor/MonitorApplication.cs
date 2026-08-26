@@ -58,7 +58,7 @@ public sealed class MonitorApplication
 
             try
             {
-                string port = locator.ResolvePort();
+                string port = await ResolveVerifiedPortAsync(locator, cancellationToken).ConfigureAwait(false);
                 string version = await device.OpenAsync(port, enableKeyReports: true, cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation("Connected to {Version} on {Port}", version, port);
                 retrySeconds = 1;
@@ -162,6 +162,16 @@ public sealed class MonitorApplication
     }
 
     private static bool IsElevated() => TemperatureMonitor.IsElevated();
+
+    /// <summary>
+    /// Picks the serial port that actually answers as a CFA835. Opening a port proves nothing, so
+    /// every candidate is probed with a Get Version command before the caller commits to it.
+    /// </summary>
+    private Task<string> ResolveVerifiedPortAsync(CfaDeviceLocator locator, CancellationToken cancellationToken) =>
+        locator.ResolvePortAsync(
+            () => new SerialCfaTransport(_loggerFactory.CreateLogger<SerialCfaTransport>()),
+            _logger,
+            cancellationToken);
 
     /// <summary>
     /// Dumps every sensor LibreHardwareMonitor exposes. This is the tool for answering "why is the
@@ -348,11 +358,43 @@ public sealed class MonitorApplication
         Console.WriteLine($"Elevated: {IsElevated()}");
         Console.WriteLine($"Configuration: {_options.Device.Vid}:{_options.Device.Pid}, serial {_options.Device.Serial}, fallback {_options.Device.FallbackPort}");
 
+        // Printed before anything is opened, because "which port" is the single most common
+        // deployment failure: a configuration pinned to one unit's serial silently falls through to
+        // device.fallbackPort, which may be an unrelated device that opens fine and never answers.
+        CfaDeviceLocator inventory = new(_options.Device);
+        IReadOnlyList<string> presentPorts = CfaDeviceLocator.PresentPorts();
+        Console.WriteLine($"Serial ports present: {(presentPorts.Count == 0 ? "(none)" : string.Join(", ", presentPorts))}");
+
+        IReadOnlyList<UsbPortEntry> usbEntries = inventory.DescribeUsbEntries();
+        if (usbEntries.Count == 0)
+        {
+            Console.WriteLine("USB registry entries: none for this VID/PID");
+        }
+        else
+        {
+            Console.WriteLine("USB registry entries:");
+            foreach (UsbPortEntry entry in usbEntries)
+            {
+                string match = entry.Serial.Equals(_options.Device.Serial, StringComparison.OrdinalIgnoreCase)
+                    ? "  <- matches device.serial"
+                    : string.Empty;
+                Console.WriteLine(
+                    $"  serial {entry.Serial}: port {entry.PortName ?? "(none)"}, " +
+                    $"{(entry.Present ? "present" : "NOT PRESENT")}{match}");
+            }
+        }
+
+        Console.WriteLine("Candidate ports, best first:");
+        foreach (PortCandidate candidate in inventory.CandidatePorts())
+        {
+            Console.WriteLine($"  {candidate.Port}: {candidate.Reason}");
+        }
+
         int failures = 0;
         try
         {
             CfaDeviceLocator locator = new(_options.Device);
-            string port = locator.ResolvePort();
+            string port = await ResolveVerifiedPortAsync(locator, cancellationToken).ConfigureAwait(false);
             await using Cfa835Device device = new(
                 new SerialCfaTransport(_loggerFactory.CreateLogger<SerialCfaTransport>()),
                 _loggerFactory.CreateLogger<Cfa835Device>());
@@ -446,7 +488,7 @@ public sealed class MonitorApplication
     public async Task<int> HardwareTestAsync(bool nonInteractive, CancellationToken cancellationToken)
     {
         CfaDeviceLocator locator = new(_options.Device);
-        string port = locator.ResolvePort();
+        string port = await ResolveVerifiedPortAsync(locator, cancellationToken).ConfigureAwait(false);
         await using Cfa835Device device = new(
             new SerialCfaTransport(_loggerFactory.CreateLogger<SerialCfaTransport>()),
             _loggerFactory.CreateLogger<Cfa835Device>());

@@ -2,6 +2,24 @@
 
 All notable changes are recorded here in reverse chronological order. Dates use the builder's local calendar date; `COMMIT.txt` in each release folder is the authoritative source revision.
 
+## 2026-08-26 — Port resolution
+
+### Fixed
+
+- Fixed the monitor opening the wrong serial port. `device.serial` shipped set to one specific module's serial number, so on any other unit the registry lookup matched nothing and resolution fell straight through to `device.fallbackPort`. When that port happened to belong to an unrelated device it opened successfully and then never answered, producing `Opened CFA835 transport on COM3` followed by three `command 0x01 timed out` warnings and an endless reconnect loop.
+- Changed the default `device.serial` to empty, meaning "any CFA835 with the configured VID/PID". Pinning a redistributable build to one unit's serial was the root cause; set it only to disambiguate between two modules on the same machine.
+
+### Changed
+
+- Port resolution now builds an ordered candidate list and **verifies each one with a Get Version command** before committing. Opening a port proves nothing, which is exactly why the failure above was silent. Order: the entry matching `device.serial`, then every other CFA835 of the same VID/PID, then `device.fallbackPort`, then every remaining serial port. A candidate that answers but does not identify as an 835 is kept only as a last resort.
+- Added `device.probeAllPorts` (default `true`) to control that final sweep. Each probe writes one Get Version packet, so set it to `false` on machines with other serial devices that must not receive unsolicited bytes. Probes are capped at 1.5 s per port rather than the 2.25 s that three command retries would cost.
+- Startup now logs which candidate won and why, for example `Found CFA835:h2.0,f1.6 on COM7 via USB VID_223B&PID_0005, serial <n>`. Previously the log said only `Opened CFA835 transport on COM3` with no indication of whether that came from a registry match or the fallback.
+- Failure now names every port tried and the reason each was suggested, instead of reporting a bare timeout.
+
+### Diagnostics
+
+- `--diagnose` now prints, before touching any hardware: every serial port present, every CFA835 the registry knows about with its serial, port and presence (flagging which one matches `device.serial`), and the resolved candidate order. This turns "which port" from guesswork into a lookup, which matters most on air-gapped machines where logs are transcribed by hand.
+
 ## 2026-08-25 — Sensor diagnostics
 
 ### Added

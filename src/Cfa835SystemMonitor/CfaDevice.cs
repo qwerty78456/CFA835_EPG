@@ -4,37 +4,201 @@ using Microsoft.Win32;
 
 namespace Cfa835SystemMonitor;
 
+/// <summary>A port worth trying, with the reason it was suggested (for logs and diagnostics).</summary>
+public sealed record PortCandidate(string Port, string Reason);
+
+/// <summary>One USB enumeration entry for the configured VID/PID, as recorded in the registry.</summary>
+public sealed record UsbPortEntry(string Serial, string? PortName, bool Present);
+
 public sealed class CfaDeviceLocator(DeviceOptions options)
 {
-    public string ResolvePort()
+    private string UsbKeyName => $"VID_{options.Vid.ToUpperInvariant()}&PID_{options.Pid.ToUpperInvariant()}";
+
+    public static IReadOnlyList<string> PresentPorts() =>
+        System.IO.Ports.SerialPort.GetPortNames().Distinct(StringComparer.OrdinalIgnoreCase).Order().ToArray();
+
+    /// <summary>Every CFA835 the registry knows about, whichever serial it carries. Used by --diagnose.</summary>
+    public IReadOnlyList<UsbPortEntry> DescribeUsbEntries()
+    {
+        using RegistryKey? usb = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Enum\USB\{UsbKeyName}");
+        if (usb is null)
+        {
+            return [];
+        }
+
+        List<UsbPortEntry> entries = [];
+        foreach (string serial in usb.GetSubKeyNames())
+        {
+            using RegistryKey? parameters = usb.OpenSubKey($@"{serial}\Device Parameters");
+            string? port = parameters?.GetValue("PortName") as string;
+            entries.Add(new UsbPortEntry(serial, port, port is not null && IsPresent(port)));
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// Ports to try, best first. Crucially this includes CFA835s whose serial does <em>not</em> match
+    /// <c>device.serial</c>: pinning the configuration to one unit's serial otherwise makes every other
+    /// module fall through to <c>device.fallbackPort</c>, which may well be an unrelated device that
+    /// opens fine and then never answers.
+    /// </summary>
+    public IReadOnlyList<PortCandidate> CandidatePorts() =>
+        BuildCandidates(options, DescribeUsbEntries(), PresentPorts());
+
+    /// <summary>
+    /// Pure ordering rule behind <see cref="CandidatePorts"/>, separated from registry and serial-port
+    /// enumeration so it can be tested against machine states that are awkward to reproduce.
+    /// </summary>
+    public static IReadOnlyList<PortCandidate> BuildCandidates(
+        DeviceOptions options,
+        IReadOnlyList<UsbPortEntry> entries,
+        IReadOnlyList<string> presentPorts)
     {
         string usbKeyName = $"VID_{options.Vid.ToUpperInvariant()}&PID_{options.Pid.ToUpperInvariant()}";
-        using RegistryKey? usb = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Enum\USB\{usbKeyName}");
-        if (usb is not null)
-        {
-            IEnumerable<string> serials = usb.GetSubKeyNames();
-            if (!string.IsNullOrWhiteSpace(options.Serial))
-            {
-                serials = serials.Where(serial => serial.Equals(options.Serial, StringComparison.OrdinalIgnoreCase));
-            }
+        List<PortCandidate> candidates = [];
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
 
-            foreach (string serial in serials)
+        void Add(string? port, string reason)
+        {
+            if (!string.IsNullOrWhiteSpace(port) &&
+                presentPorts.Contains(port, StringComparer.OrdinalIgnoreCase) &&
+                seen.Add(port))
             {
-                using RegistryKey? parameters = usb.OpenSubKey($@"{serial}\Device Parameters");
-                if (parameters?.GetValue("PortName") is string port && IsPresent(port))
-                {
-                    return port;
-                }
+                candidates.Add(new PortCandidate(port, reason));
             }
         }
 
-        if (IsPresent(options.FallbackPort))
+        foreach (UsbPortEntry entry in entries.Where(entry =>
+                     !string.IsNullOrWhiteSpace(options.Serial) &&
+                     entry.Serial.Equals(options.Serial, StringComparison.OrdinalIgnoreCase)))
         {
-            return options.FallbackPort;
+            Add(entry.PortName, $"USB {usbKeyName}, configured serial {entry.Serial}");
+        }
+
+        // Every other module of the same VID/PID comes before the fallback. A configuration carrying
+        // one site's serial must not strand an identical unit that simply has a different one.
+        foreach (UsbPortEntry entry in entries)
+        {
+            Add(entry.PortName, $"USB {usbKeyName}, serial {entry.Serial}");
+        }
+
+        Add(options.FallbackPort, "configured device.fallbackPort");
+
+        if (options.ProbeAllPorts)
+        {
+            foreach (string port in presentPorts)
+            {
+                Add(port, "probe of remaining serial ports");
+            }
+        }
+
+        return candidates;
+    }
+
+    /// <summary>First candidate without contacting the device. Kept for callers that only need a name.</summary>
+    public string ResolvePort() =>
+        CandidatePorts().FirstOrDefault()?.Port ?? throw new FileNotFoundException(NotFoundMessage());
+
+    /// <summary>
+    /// Picks the port that actually answers a Get Version command. Opening a port proves nothing —
+    /// an unrelated COM device opens just as happily and then times out — so each candidate is
+    /// verified before the monitor commits to it.
+    /// </summary>
+    public Task<string> ResolvePortAsync(
+        Func<ICfaTransport> transportFactory,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<PortCandidate> candidates = CandidatePorts();
+        return candidates.Count == 0
+            ? throw new FileNotFoundException(NotFoundMessage())
+            : ProbeCandidatesAsync(candidates, transportFactory, logger, cancellationToken);
+    }
+
+    /// <summary>
+    /// Probing loop, separated from registry and serial-port enumeration so it can be tested against
+    /// a scripted set of ports.
+    /// </summary>
+    public static async Task<string> ProbeCandidatesAsync(
+        IReadOnlyList<PortCandidate> candidates,
+        Func<ICfaTransport> transportFactory,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        PortCandidate? answered = null;
+        foreach (PortCandidate candidate in candidates)
+        {
+            string? version = await IdentifyAsync(candidate.Port, transportFactory, logger, cancellationToken)
+                .ConfigureAwait(false);
+            if (version is null)
+            {
+                logger.LogDebug("No response on {Port} ({Reason})", candidate.Port, candidate.Reason);
+                continue;
+            }
+
+            if (version.Contains("835", StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogInformation(
+                    "Found {Version} on {Port} via {Reason}", version, candidate.Port, candidate.Reason);
+                return candidate.Port;
+            }
+
+            // Something is talking the CFA packet protocol but does not call itself an 835. Remember it
+            // and keep looking for a better match before settling.
+            logger.LogWarning(
+                "{Port} answered but reported '{Version}', not a CFA835", candidate.Port, version);
+            answered ??= candidate;
+        }
+
+        if (answered is not null)
+        {
+            logger.LogWarning("Falling back to {Port} ({Reason})", answered.Port, answered.Reason);
+            return answered.Port;
         }
 
         throw new FileNotFoundException(
-            $"CFA835 USB {usbKeyName}, serial '{options.Serial}', was not found. Fallback {options.FallbackPort} is not present.");
+            "No CFA835 answered on any candidate port. Tried: " +
+            string.Join(", ", candidates.Select(item => $"{item.Port} ({item.Reason})")) + ".");
+    }
+
+    private static async Task<string?> IdentifyAsync(
+        string port,
+        Func<ICfaTransport> transportFactory,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        ICfaTransport transport = transportFactory();
+        try
+        {
+            // SendCommandAsync retries three times at 750 ms; probing a port that will never answer
+            // must not cost that much, so cap the whole attempt.
+            using CancellationTokenSource attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attempt.CancelAfter(TimeSpan.FromMilliseconds(1500));
+            await transport.OpenAsync(port, attempt.Token).ConfigureAwait(false);
+            CfaPacket response = await transport
+                .SendCommandAsync(0x01, ReadOnlyMemory<byte>.Empty, attempt.Token)
+                .ConfigureAwait(false);
+            return Encoding.ASCII.GetString(response.Data).TrimEnd('\0', ' ');
+        }
+        catch (Exception exception)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            logger.LogDebug(exception, "Probe of {Port} failed", port);
+            return null;
+        }
+        finally
+        {
+            await transport.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private string NotFoundMessage()
+    {
+        IReadOnlyList<string> present = PresentPorts();
+        return $"No candidate port for CFA835 USB {UsbKeyName} (configured serial '{options.Serial}', " +
+            $"fallback {options.FallbackPort}). Present ports: " +
+            (present.Count == 0 ? "(none)" : string.Join(", ", present)) + ".";
     }
 
     private static bool IsPresent(string port) =>

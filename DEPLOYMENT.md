@@ -55,7 +55,11 @@ Confirm the device appears before deployment:
 [System.IO.Ports.SerialPort]::GetPortNames()
 ```
 
-The default configuration resolves USB VID `223B`, PID `0005`, and the configured serial number, then uses `COM3` as a fallback. Edit a copied configuration file when the hardware differs.
+The default configuration resolves USB VID `223B`, PID `0005`. `device.serial` is empty by default, meaning **any** CFA835 with that VID/PID — set it only to disambiguate two modules on one machine, and never ship a build pinned to one site's serial.
+
+Port selection tries candidates in order and verifies each with a Get Version command before committing: the entry matching `device.serial`, then every other CFA835 of the same VID/PID, then `device.fallbackPort`, then every remaining serial port when `device.probeAllPorts` is `true`. Set `probeAllPorts` to `false` on machines with other serial devices that must not receive unsolicited bytes; each probe writes one Get Version packet.
+
+Run `--diagnose` to see the full inventory before deploying — it lists every serial port present, every CFA835 the registry knows about with its serial and port, and the resolved candidate order.
 
 ## 3. Validate a release before running it
 
@@ -337,6 +341,15 @@ scp.exe -r User@builder:'D:/cfa835/Cfa835SystemMonitor-640d1d649e28-source/artif
 After transfer, re-run section 3 on the monitored machine. Network transfer success alone is not deployment success; complete sections 6, 7 or 8, and 10.
 
 ## 12. Troubleshooting
+
+### Port opens but every command times out
+
+Symptom: `Opened CFA835 transport on COMx` followed by `CFA command 0x01 timed out on attempt 1/3 … 3/3` and an endless reconnect loop.
+
+- The port opened but nothing on it speaks the CFA835 protocol, so it is almost certainly the wrong port. Opening a COM port succeeds regardless of what is behind it.
+- Run `--diagnose` and compare `Serial ports present`, the `USB registry entries` list, and the candidate order. If the registry lists a CFA835 whose serial does not match `device.serial`, clear `device.serial` so any unit is accepted.
+- Builds from 2026-08-26 onward verify each candidate with a Get Version command and log which one won (`Found CFA835:… on COMx via …`), so this failure mode reports the ports it tried instead of a bare timeout. On an older build, this symptom with `device.serial` set to another machine's module is the known cause.
+- Confirm the CFA835 virtual-COM driver is installed; without it the module never appears as a port at all.
 
 ### COM port access denied
 

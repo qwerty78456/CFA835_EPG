@@ -81,8 +81,21 @@ public sealed class DeviceOptions
 {
     public string Vid { get; init; } = "223B";
     public string Pid { get; init; } = "0005";
-    public string Serial { get; init; } = "1711735TMLD419715";
+
+    /// <summary>
+    /// Optional USB serial number. Empty means "any CFA835 with the configured VID/PID", which is the
+    /// right default for a redistributable build: pinning it to one unit's serial makes every other
+    /// module fall through to <see cref="FallbackPort"/>.
+    /// </summary>
+    public string Serial { get; init; } = string.Empty;
     public string FallbackPort { get; init; } = "COM3";
+
+    /// <summary>
+    /// When the registry entries and <see cref="FallbackPort"/> all fail to answer, try every
+    /// remaining serial port. Each attempt writes one Get Version packet, so disable this if the
+    /// machine has other serial devices that must never receive unsolicited bytes.
+    /// </summary>
+    public bool ProbeAllPorts { get; init; } = true;
 
     internal void Validate()
     {
