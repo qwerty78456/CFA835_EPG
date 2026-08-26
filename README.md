@@ -1,20 +1,19 @@
 # CFA835 System Monitor
 
-A Windows-only system monitor for the Crystalfontz CFA835 USB LCD/keypad/LED module. The main 20x4 screen shows local date/time, total CPU utilization, one selected system temperature, and auto-cycle state. A second page shows aggregate physical-network throughput. A manually reached shutdown page provides confirmation, an adjustable countdown, and cancellation.
+A Windows-only system monitor for the Crystalfontz CFA835 USB LCD screen and keypad module.
 
-The module is really a 244x68-pixel, 16-shade greyscale panel with the 20x4 character API layered on top. `display.mode` chooses which layer the app drives: `text` (the default, described immediately below) or `graphic` (background artwork plus text boxes placed by pixel coordinate, described under [Graphic mode](#graphic-mode)).
+The module is  a 244x68-pixel, 16-shade greyscale panel with the 20x4 character API layered on top. `display.mode` chooses which layer the app drives: `text` (the default, described immediately below) or `graphic` (background artwork plus text boxes placed by pixel coordinate, described under [Graphic mode](#graphic-mode)).
 
 Temperature sampling prefers the hottest valid LibreHardwareMonitor/PawnIO reading and falls back to the hottest Windows ACPI thermal zone when no primary reading is available. CPU-only temperature selection remains separate for the thermal-warning LED. A CPU sensor reporting 0 C or below is treated as unreadable rather than as a real reading, because LibreHardwareMonitor still enumerates CPU sensors when PawnIO is absent.
 
 ## Display pages
 
-The page order in text mode is deliberately small:
+The page order in text mode is as follows:
 
 1. Main: date/time, `CPU UTIL`, `TEMPERATURE`, and `AUTO` state.
 2. Network: receive, transmit, and total Mbps.
 3. Shutdown: manual-only shutdown controls.
-
-There are no separate CPU or temperature pages. Auto-cycle alternates between Main and Network and never lands on Shutdown.
+Auto-cycle alternates between Main and Network and never lands on Shutdown.
 
 ## Graphic mode
 
