@@ -4,14 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository layout
 
-The common workstation layout contains two sibling folders, not one project root:
+The repository root contains `Cfa835SystemMonitor.slnx`, source, tests, scripts, documentation, and
+third-party notices. `scripts/Build-Release.ps1` writes ignored, immutable, timestamped,
+self-contained `win-x64` folders under `artifacts/`; treat those folders as deployment artifacts,
+not source, and do not hand-edit them.
 
-- `Cfa835SystemMonitor-640d1d649e28-source/` — the actual C# solution. All development happens here.
-- `Cfa835SystemMonitor-640d1d649e28-win-x64/` — a storage root for immutable, timestamped, self-contained `win-x64` release folders. Treat every release as an artifact, not source; do not hand-edit it.
+The repository's normal branch is `main` (`origin` points to
+`https://github.com/qwerty78456/CFA835_EPG.git`). Never assume a running process matches the current
+checkout or newest release directory: resolve its executable path and embedded ProductVersion.
 
-There is no git repository at the top level, but `Cfa835SystemMonitor-640d1d649e28-source/` is its own git repo (`origin` → `https://github.com/qwerty78456/CFA835_EPG.git`, branch `main`). Never assume a running process matches the source checkout or newest release directory: resolve its executable path and embedded ProductVersion.
-
-All commands below assume the working directory is `Cfa835SystemMonitor-640d1d649e28-source/`.
+All commands below assume the repository root as the working directory.
 
 `tmp/pdfs/CFA835_Datasheet_HW2_FW1.6.pdf` is committed and is the authoritative protocol reference for the hardware this drives (release 2022-08-24, hardware v2.0 / firmware v1.6). Check it — not a web copy — before changing anything on the wire; the publicly linked datasheet is the older hardware v1.3 / firmware v1.1 revision and differs, notably on shade depth. `tmp/pdfs/rendered/` holds page images of the command-set sections.
 
@@ -68,7 +70,9 @@ Two projects: `src/Cfa835SystemMonitor` (the app) and `tests/Cfa835SystemMonitor
 
 ```
 Program.cs            → parses argv, loads config, wires logging/cancellation, dispatches to a mode
-MonitorApplication.cs → the three top-level modes: RunAsync (service loop), DiagnoseAsync, HardwareTestAsync
+InstanceCoordination.cs → elevated single-owner policy, global mutexes, protected handover pipe, verified legacy fallback
+WindowsSecurity.cs     → effective elevated-Administrator token check shared by startup and diagnostics
+MonitorApplication.cs → five top-level modes: RunAsync, DiagnoseAsync, HardwareTestAsync, LayoutPreviewAsync, ListSensorsAsync
 CfaTransport.cs        → ICfaTransport / SerialCfaTransport: raw serial I/O, framing via CfaPacketParser, request/response correlation
 CfaProtocol.cs          → CfaPacket: wire encode/decode + CRC-16/CCITT (reversed) per the CFA835 datasheet
 CfaDevice.cs             → CfaDeviceLocator (registry-based USB VID/PID/serial → COM port resolution) and Cfa835Device (typed command wrappers: rows, LEDs, keymasks, version)
@@ -84,11 +88,13 @@ ShutdownExecutor.cs          → IShutdownExecutor / WindowsShutdownExecutor: sh
 
 Key design points:
 
+- **Every executable mode requires an elevated Administrator token.** The app host carries a `requireAdministrator` manifest and `Program` verifies the effective token again. Monitor, diagnose, and hardware-test modes additionally hold the global CFA835 device mutex; layout preview and sensor listing do not.
+- **Only foreground processes replace other foreground processes.** Handover uses a protected named pipe, cancels an app-owned shutdown countdown, then lets the old process clean up before releasing the COM mutex. Foreground/service conflicts return 75 without stopping the owner. The synchronous `Main` thread deliberately owns/releases both Win32 mutexes because mutex ownership is thread-affine.
 - **`RunAsync` owns a reconnect loop.** Each iteration creates a fresh `SerialCfaTransport` + `Cfa835Device` and reconnects with exponential backoff (1s → 30s cap) on any failure, so the outer loop — not individual methods — is where device-loss resilience lives.
 - **Two sampling cadences run independently in the same tick.** `WindowsMetricSource.Sample` refreshes CPU%/temperatures only every `sampling.temperatureMs` (LibreHardwareMonitor sensor polling is comparatively expensive), while disk/network are sampled every call. The display itself repaints on the `sampling.displayMs` cadence or immediately when `forceRender` is set (keypad input, page auto-advance). The activity loop tick rate is `sampling.activityMs`.
 - **`ScreenWriter` only writes rows that changed** (byte-for-byte diff against the last-written row) to minimize serial traffic; `PageController.Render` is otherwise stateless per call.
 - **`display.mode` selects one of two rendering stacks.** `text` (default) is the historical 20x4 path through `ScreenWriter` and command `0x1F`. `graphic` composites 244x68 greyscale frames on the host from `layout.json` and pushes rectangles with command `0x28` subcommand 2. **Never mix the two on one page**: `0x1F` bypasses the graphic buffer flush and paints an opaque character cell, so it would tear through composited artwork.
-- **A PawnIO device open needs elevation, not just an installed driver.** `TemperatureMonitor.IsPawnIoPresent()` only reads the uninstall registry key. Opening `\\?\GLOBALROOT\Device\PawnIO` additionally requires elevation, and an unelevated process gets access denied — LibreHardwareMonitor then still enumerates `Core (Tctl/Tdie)` but the sensor reports **0**, not null. That is why `CpuTemperatureSelector.Hottest` filters on `Celsius is > 0`: a zero is a failed ring-0 read, not a reading. `--list-sensors` reports this case explicitly. The service runs as LocalSystem, so it is only ever an interactive-run problem.
+- **A PawnIO device open needs an elevated token and a loaded driver.** `Program` now rejects a non-elevated process before any mode runs, while `TemperatureMonitor.IsPawnIoPresent()` only reads the uninstall registry key. LibreHardwareMonitor can still enumerate `Core (Tctl/Tdie)` with value **0** when ring-0 access is unavailable. That is why `CpuTemperatureSelector.Hottest` filters on `Celsius is > 0`: zero is a failed low-level read, not a reading. `--list-sensors` separates that condition from a CPU whose sensors are not enumerated.
 - **The ACPI thermal-zone fallback never feeds `HottestCpuC`.** `TemperatureReadingSelector.SelectSystem` derives `hottestCpu` from the LibreHardwareMonitor list only; the ACPI list is passed separately and is consulted solely for `SystemTemperature` (and its readings are constructed with `IsCpu = false`, so `CpuTemperatureSelector.Hottest` would drop them anyway). So the `cpu.temperature` layout source and the thermal-warning LED require PawnIO, while `system.temperature` degrades to ACPI. Without PawnIO the expected output is a system temperature plus `N/A` for CPU temperature.
 - **Background PNGs are copied by pixel, never by physical size.** `GrayscaleImage.Load` passes explicit source and destination rectangles in `GraphicsUnit.Pixel`. Do not reach for `Graphics.DrawImageUnscaled` or `DrawImage(image, x, y)`: both honour the file's DPI tag, so a 244x68 PNG exported at 72 DPI renders as 325x91 and spills off the frame while the pixel-size validation still passes.
 - **Graphic mode composites on the host, not the device.** `FrameComposer` crops the page background to a field rectangle, blits glyphs over it, and hands `GraphicScreenWriter` a finished `byte[width*height]`. This is why no microSD card, on-device BMP, or CFA835 font file is needed, and why text can sit on arbitrary artwork without the device-side transparency flag.
@@ -104,14 +110,14 @@ Key design points:
 - **LED GPIO mapping is hardcoded** in `Cfa835Device.LedGpio` (green/red GPIO pin pairs per logical LED 0–3) per the datasheet; `SetLedAsync` caches last-written levels per LED to skip redundant writes.
 - **Device discovery probes, it does not guess.** `CfaDeviceLocator.BuildCandidates` orders ports — the registry entry matching `device.serial`, then any other CFA835 of the same VID/PID, then `device.fallbackPort`, then every remaining port when `device.probeAllPorts` — and `ProbeCandidatesAsync` verifies each with command `0x01` before the monitor commits. **Opening a port proves nothing**: an unrelated COM device opens just as happily and then times out, which is exactly how a serial-pinned configuration silently landed on the wrong port in the field. `device.serial` defaults to empty (match any unit); set it only to disambiguate two modules on one machine. Both halves take their registry and `SerialPort.GetPortNames()` data as parameters so they are unit-testable.
 - **Configuration** (`appsettings.json`) is loaded from `%ProgramData%\Cfa835SystemMonitor\appsettings.json` when installed as a service, else `AppContext.BaseDirectory`, else `--config <path>`; every options group self-validates range/format on load and throws `InvalidDataException` (mapped to exit code 78) on bad values.
-- **The Shutdown page is opt-in only.** `PageController` excludes `PageCategory.Shutdown` from auto-cycling — it's reachable only by manually paging to it — and its state machine (`Idle → Confirm → CountingDown`) lets Left/Right adjust the countdown (`ShutdownOptions.MinCountdownSeconds`/`MaxCountdownSeconds`) before Enter commits to `IShutdownExecutor.RequestShutdown`; any key during the countdown calls `Abort()` (`shutdown /a`).
+- **The Shutdown page is opt-in only.** `PageController` excludes `PageCategory.Shutdown` from auto-cycling — it's reachable only by manually paging to it — and its state machine (`Idle → Confirm → CountingDown`) lets Left/Right adjust the countdown (`ShutdownOptions.MinCountdownSeconds`/`MaxCountdownSeconds`) before Enter commits to `IShutdownExecutor.RequestShutdown`; Exit during the countdown calls `TryAbort()` (`shutdown /a`). A process handover is rejected when that abort cannot be confirmed.
 - **`--diagnose` and `--hardware-test` are read-only/restore-on-exit by design** — `--diagnose` reads and prints display RAM but never writes display/LED/keymask state; `--hardware-test` snapshots keymasks/rows/LEDs before running and restores them in a `finally`, even on timeout.
 - **A release is not deployed until the live process is verified.** Releases are uncompressed timestamped folders containing `COMMIT.txt`, `BUILD-TIMESTAMP.txt`, and `SHA256SUMS.txt`. After switching builds, resolve the live process path/ProductVersion and complete the physical-screen sequence in `DEPLOYMENT.md`; never restart the previous build after validating the new one.
 - Native interop (P/Invoke) is used directly for CPU times (`kernel32!GetSystemTimes`), disk throughput (`pdh.dll`), and NIC stats (`iphlpapi!GetIfTable2`) rather than going through WMI/PerformanceCounter, for lower overhead in the tight polling loop.
 
 ### Tests
 
-`tests/Cfa835SystemMonitor.Tests` covers the protocol (`ProtocolTests.cs`: CRC vectors, fragmented/resynchronizing parsing, device command mapping and the `0x28` subcommands via a hand-written `FakeTransport`), display/paging (`DisplayTests.cs`, including layout-driven page rings), layout parsing and validation (`LayoutTests.cs`), graphic composition and DPI-independent background loading (`GraphicRenderingTests.cs`), argument parsing (`CommandLineTests.cs`), and metrics/LED policy (`MetricsAndLedTests.cs`). No mocking framework is used — fakes are small hand-rolled classes implementing the relevant interface (`ICfaTransport`, `INetworkCounterProvider`, `IGlyphSource`, etc.). `GraphicRenderingTests` composes against a deterministic block-font `IGlyphSource` so assertions are byte-exact and GDI+ stays out of most of the run; the two tests that do exercise `GdiGlyphSource` deliberately request an unknown family so they fall back to generic sans-serif and do not depend on which fonts a machine has installed.
+`tests/Cfa835SystemMonitor.Tests` covers the protocol (`ProtocolTests.cs`: CRC vectors, fragmented/resynchronizing parsing, device command mapping and the `0x28` subcommands via a hand-written `FakeTransport`), display/paging and shutdown-handover preparation (`DisplayTests.cs`, including layout-driven page rings), process-ownership policy (`InstanceCoordinationTests.cs`), layout parsing and validation (`LayoutTests.cs`), graphic composition and DPI-independent background loading (`GraphicRenderingTests.cs`), argument parsing (`CommandLineTests.cs`), and metrics/LED policy (`MetricsAndLedTests.cs`). No mocking framework is used — fakes are small hand-rolled classes implementing the relevant interface (`ICfaTransport`, `INetworkCounterProvider`, `IGlyphSource`, etc.). `GraphicRenderingTests` composes against a deterministic block-font `IGlyphSource` so assertions are byte-exact and GDI+ stays out of most of the run; the two tests that do exercise `GdiGlyphSource` deliberately request an unknown family so they fall back to generic sans-serif and do not depend on which fonts a machine has installed.
 
 ## Licensing
 
@@ -119,8 +125,12 @@ The project is MIT (`LICENSE`). `third-party/pawnio/` redistributes the **PawnIO
 
 ## Runtime prerequisites (not needed to build/test, only to run against real hardware)
 
-1. Crystalfontz CFA735/835 USB virtual-COM driver.
-2. Signed normal-edition PawnIO 2.2.0 (temperature sensor access via LibreHardwareMonitor). Bundled at `third-party/pawnio/PawnIO_setup.exe` and installed by `Install-Service.ps1` when absent, which verifies the Authenticode signer is `CN=namazso.eu` first and refuses otherwise. Bundling removes the download, **not** the install: it is a kernel driver, so it needs an admin-registered service and a Microsoft-attested signature. The PawnIO *modules* are already embedded in `LibreHardwareMonitorLib.dll`, so the driver is the only missing piece.
-3. NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe` for the Windows service scripts (`scripts/Install-Service.ps1`, `Update-Service.ps1`, `Uninstall-Service.ps1`).
+The deployable unit is the complete self-contained release directory; the target needs no separate
+.NET installation, but it is not a single-file application.
+
+1. Windows 10 or later, x64, and an elevated Administrator token for every executable mode.
+2. Crystalfontz CFA735/835 USB virtual-COM driver.
+3. Signed normal-edition PawnIO 2.2.0 (temperature sensor access via LibreHardwareMonitor). Bundled at `third-party/pawnio/PawnIO_setup.exe` and installed by `Install-Service.ps1` when absent, which verifies the Authenticode signer is `CN=namazso.eu` first and refuses otherwise. Bundling removes the download, **not** the install: it is a kernel driver, so it needs an admin-registered service and a Microsoft-attested signature. The PawnIO *modules* are already embedded in `LibreHardwareMonitorLib.dll`, so the driver is the only missing piece.
+4. NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe` for the Windows service scripts (`scripts/Install-Service.ps1`, `Update-Service.ps1`, `Uninstall-Service.ps1`). NSSM is external and is not included in a release.
 
 See `DEPLOYMENT.md` for artifact validation, foreground and service installation, update/rollback, remote Windows building, live-process verification, and physical CFA835 acceptance.

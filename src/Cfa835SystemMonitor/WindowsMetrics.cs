@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Security.Principal;
 using LibreHardwareMonitor.Hardware;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
@@ -494,9 +493,8 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
             _fallbackLogged = true;
         }
 
-        // A registered PawnIO driver is necessary but not sufficient: opening its device also needs
-        // elevation, and an unelevated process silently reads no CPU temperature at all. Say so once
-        // rather than leaving the field showing its fallback text with no explanation.
+        // Defense in depth for library callers that bypass Program's mandatory elevation guard: a
+        // registered PawnIO driver is insufficient when its device cannot be opened by this token.
         if (!_elevationLogged && !selection.HottestCpuC.HasValue && IsPawnIoPresent() && !IsElevated())
         {
             logger.LogWarning(
@@ -548,21 +546,11 @@ public sealed class TemperatureMonitor(ILogger<TemperatureMonitor> logger) : IDi
 
     /// <summary>
     /// Whether this process can open ring-0 helper devices such as <c>\\?\GLOBALROOT\Device\PawnIO</c>.
-    /// Installing the driver is not sufficient: an unelevated process gets access denied, so CPU
-    /// temperatures read as unavailable. The Windows service runs as LocalSystem and is unaffected.
+    /// Installing the driver is not sufficient: the process also needs an elevated token. Program
+    /// enforces that for every executable mode and the Windows service runs as LocalSystem.
     /// </summary>
     public static bool IsElevated()
-    {
-        try
-        {
-            using WindowsIdentity identity = WindowsIdentity.GetCurrent();
-            return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-    }
+        => WindowsSecurity.IsElevatedAdministrator();
 
     /// <summary>Every sensor LibreHardwareMonitor currently exposes, for the --list-sensors diagnostic.</summary>
     public IReadOnlyList<SensorDescription> Describe(DateTimeOffset now)

@@ -5,6 +5,9 @@
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <AssemblyName>Cfa835SystemMonitor</AssemblyName>
     <RootNamespace>Cfa835SystemMonitor</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Product>CFA835 System Monitor</Product>
+    <Description>Windows system monitor for the Crystalfontz CFA835.</Description>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
@@ -14,6 +17,7 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
     <PackageReference Include="System.IO.Ports" Version="10.0.3" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.3" />
   </ItemGroup>
   <ItemGroup>
     <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />

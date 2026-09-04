@@ -5,7 +5,10 @@ namespace Cfa835SystemMonitor;
 
 public static class Program
 {
-    public static async Task<int> Main(string[] args)
+    private const int PermissionDeniedExitCode = 77;
+    private const int OwnershipConflictExitCode = 75;
+
+    public static int Main(string[] args)
     {
         CommandLineOptions commandLine;
         try
@@ -30,14 +33,21 @@ public static class Program
             return 78;
         }
 
+        if (!WindowsSecurity.IsElevatedAdministrator())
+        {
+            Console.Error.WriteLine(
+                "CFA835 System Monitor requires an elevated Administrator token. Re-run it with Run as administrator.");
+            return PermissionDeniedExitCode;
+        }
+
         MonitorOptions options;
         try
         {
             options = MonitorOptions.Load(commandLine.ConfigPath);
             if (options.Display.ResolvedMode == DisplayMode.Graphic || commandLine.Mode == AppMode.LayoutPreview)
             {
-                // Parse the layout here so a bad file fails with the configuration exit code rather
-                // than crashing later inside the monitor loop.
+                // Validate before instance replacement so a bad new configuration never stops a
+                // healthy process that is already driving the display.
                 _ = LayoutDocument.Load(options.ResolveLayoutPath());
             }
         }
@@ -70,14 +80,24 @@ public static class Program
         try
         {
             MonitorApplication application = new(options, loggerFactory);
-            return commandLine.Mode switch
+            if (!InstanceCoordinator.UsesCfaDevice(commandLine.Mode))
             {
-                AppMode.Diagnose => await application.DiagnoseAsync(shutdown.Token),
-                AppMode.HardwareTest => await application.HardwareTestAsync(commandLine.NonInteractive, shutdown.Token),
-                AppMode.LayoutPreview => await application.LayoutPreviewAsync(commandLine, shutdown.Token),
-                AppMode.ListSensors => await application.ListSensorsAsync(shutdown.Token),
-                _ => await application.RunAsync(commandLine.Simulation, shutdown.Token)
-            };
+                return RunApplicationAsync(application, commandLine, shutdown.Token).GetAwaiter().GetResult();
+            }
+
+            using InstanceCoordinator coordinator = new(
+                commandLine.Mode,
+                loggerFactory.CreateLogger<InstanceCoordinator>());
+            InstanceAcquireResult ownership = coordinator.Acquire();
+            if (!ownership.Acquired)
+            {
+                loggerFactory.CreateLogger("Instance").LogError("{Error}", ownership.Error);
+                return OwnershipConflictExitCode;
+            }
+
+            coordinator.StartControlServer(application.PrepareForReplacement, shutdown.Cancel);
+
+            return RunApplicationAsync(application, commandLine, shutdown.Token).GetAwaiter().GetResult();
         }
         catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
         {
@@ -89,4 +109,17 @@ public static class Program
             return 1;
         }
     }
+
+    private static Task<int> RunApplicationAsync(
+        MonitorApplication application,
+        CommandLineOptions commandLine,
+        CancellationToken cancellationToken) =>
+        commandLine.Mode switch
+        {
+            AppMode.Diagnose => application.DiagnoseAsync(cancellationToken),
+            AppMode.HardwareTest => application.HardwareTestAsync(commandLine.NonInteractive, cancellationToken),
+            AppMode.LayoutPreview => application.LayoutPreviewAsync(commandLine, cancellationToken),
+            AppMode.ListSensors => application.ListSensorsAsync(cancellationToken),
+            _ => application.RunAsync(commandLine.Simulation, cancellationToken)
+        };
 }

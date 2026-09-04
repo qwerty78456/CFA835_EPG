@@ -313,12 +313,14 @@ public sealed record CommandLineOptions(
 
     public static string HelpText => """
         CFA835 System Monitor
+          Every mode requires an elevated Administrator token.
+
           --diagnose                 Read-only device and metric diagnostics
           --hardware-test            Exercise LCD, keypad and status LEDs
           --noninteractive           Use a timed hardware test without waiting for keys
           --config <path>            Use an alternate appsettings.json
           --simulate <scenario>      thermal-89|thermal-90|thermal-92|disk|network-rx|network-tx|network-both
-          --list-sensors             Dump every LibreHardwareMonitor sensor; run elevated
+          --list-sensors             Dump every LibreHardwareMonitor sensor
           --layout-preview [file]    Render the graphic layout to a PNG; no CFA835 required
                                      (accepts --simulate to preview realistic sensor values)
           --preview-page <id>        Layout page to preview (default: the first page)

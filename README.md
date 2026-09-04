@@ -2,7 +2,7 @@
 
 A Windows-only system monitor for the Crystalfontz CFA835 USB LCD screen and keypad module.
 
-The module is  a 244x68-pixel, 16-shade greyscale panel with the 20x4 character API layered on top. `display.mode` chooses which layer the app drives: `text` (the default, described immediately below) or `graphic` (background artwork plus text boxes placed by pixel coordinate, described under [Graphic mode](#graphic-mode)).
+The module is a 244x68-pixel, 16-shade greyscale panel with the 20x4 character API layered on top. `display.mode` chooses which layer the app drives: `text` (the default, described immediately below) or `graphic` (background artwork plus text boxes placed by pixel coordinate, described under [Graphic mode](#graphic-mode)).
 
 Temperature sampling prefers the hottest valid LibreHardwareMonitor/PawnIO reading and falls back to the hottest Windows ACPI thermal zone when no primary reading is available. CPU-only temperature selection remains separate for the thermal-warning LED. A CPU sensor reporting 0 C or below is treated as unreadable rather than as a real reading, because LibreHardwareMonitor still enumerates CPU sensors when PawnIO is absent.
 
@@ -13,6 +13,7 @@ The page order in text mode is as follows:
 1. Main: date/time, `CPU UTIL`, `TEMPERATURE`, and `AUTO` state.
 2. Network: receive, transmit, and total Mbps.
 3. Shutdown: manual-only shutdown controls.
+
 Auto-cycle alternates between Main and Network and never lands on Shutdown.
 
 ## Graphic mode
@@ -79,19 +80,48 @@ The keypad model is identical in graphic mode; only the rendering differs. Left/
 ```
 
 `--list-sensors` dumps every sensor LibreHardwareMonitor exposes, with a summary that distinguishes
-a missing driver, a missing elevation, and hardware whose sensors genuinely are not enumerated. It
+an unavailable ring-0 sensor path from hardware whose CPU sensors genuinely are not enumerated. It
 exits non-zero when no CPU temperature has a plausible value, so it is the first thing to run when
-`cpu.temperature` shows its fallback. Run it elevated. `--layout-preview` needs no CFA835 at all: it renders one layout page to a PNG using live metrics, which is the intended way to position boxes before touching hardware. `--diagnose` reads device/sensor state and prints the four rows currently stored in display RAM without changing the display, keypad configuration, LEDs, or persistent device settings. `--hardware-test` temporarily exercises the display and LEDs, watches keypad presses, and restores the state captured at startup. Only one process can own the CFA835 COM port at a time; stop the running monitor before either hardware mode.
+`cpu.temperature` shows its fallback. `--layout-preview` needs no CFA835 at all: it renders one layout page to a PNG using live metrics, which is the intended way to position boxes before touching hardware. `--diagnose` reads device/sensor state and prints the four rows currently stored in display RAM without changing the display, keypad configuration, LEDs, or persistent device settings. `--hardware-test` temporarily exercises the display and LEDs, watches keypad presses, and restores the state captured at startup.
+
+## Administrator and process ownership
+
+Every command mode requires an elevated Administrator token. The executable carries a
+`requireAdministrator` manifest, so an interactive start displays a UAC prompt before the process
+runs. The executable is not Authenticode-signed yet and Windows may therefore identify it as an
+unknown publisher; keep production releases under an administrator-controlled directory. The
+LocalSystem service already satisfies the token requirement. A defense-in-depth runtime check exits
+with code 77 if the process does not actually have an enabled Administrators SID.
+
+Only one monitor, diagnostic, or hardware-test process can own the CFA835. A new foreground process
+asks an existing foreground instance to cancel any pending Windows shutdown, clean up the display,
+close the COM port, and exit before it continues. A legacy build without that control endpoint is
+forced to stop only after its PID, start time, executable path, product metadata, and session have
+been verified. `--layout-preview` and `--list-sensors` do not claim the CFA835 and can run alongside
+the monitor.
+
+Configuration and graphic-layout validation complete before an existing foreground owner is asked
+to exit. Invalid input therefore exits with code 78 without interrupting a healthy monitor.
+
+Foreground and service processes deliberately never replace one another. If the NSSM service is
+active, a foreground monitor, diagnostic, or hardware test exits with code 75; stop the service
+explicitly first. If the service starts while a foreground process owns the device, it exits with
+code 75 and NSSM retries according to its configured restart policy.
 
 ## Runtime prerequisites
 
-1. Windows 10 or later on x64.
+1. Windows 10 or later on x64, with an elevated Administrator token for every invocation.
 2. Crystalfontz CFA735/835 USB virtual-COM driver.
 3. Signed normal-edition PawnIO 2.2.0 for LibreHardwareMonitor low-level sensor access. **The signed installer ships in `third-party/pawnio/`**, and `Install-Service.ps1` runs it automatically when the driver is absent, so no download is needed on the monitored machine. Pass `-SkipPawnIO` to decline. See [Why PawnIO is still an install step](#why-pawnio-is-still-an-install-step).
-4. NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe` when installing as a service.
+4. NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe` when installing as a service. NSSM is not bundled; foreground operation does not need it.
 5. For graphic mode only: the font families named in `layout.fontFamilies` installed on the monitored machine. The first installed family wins; if none is present the app logs a warning and falls back to generic sans-serif. `Bahnschrift SemiLight` ships with Windows 10 and later as a named instance of the `bahnschrift.ttf` variable font, and Windows exposes it to GDI+ as its own family name.
 
-The runtime is a self-contained `win-x64` publish and does not require a separately installed .NET runtime. `System.Drawing.Common` is included for PNG decoding and font rasterization; it wraps GDI+, which is part of Windows, so the release gains no native payload.
+The runtime is a self-contained `win-x64` publish and does not require a separately installed .NET
+SDK or runtime. Self-contained does **not** mean single-file: deploy the complete timestamped release
+directory because the executable depends on the runtime DLLs and configuration beside it. On a
+clean Windows installation, the Crystalfontz driver is still required for the physical USB device;
+PawnIO is required only for CPU temperature access; and NSSM is required only for service mode.
+`System.Drawing.Common` wraps GDI+, which is already part of Windows.
 
 ### Why PawnIO is still an install step
 
@@ -109,11 +139,10 @@ Without it, `--diagnose` reports `PawnIO: NOT INSTALLED`, `cpu.temperature` rend
 text, and the thermal-warning LED never arms. This is identical on Intel and AMD; a CPU-vendor
 difference between a build workstation and the monitored machine is never the explanation.
 
-Installing the driver is necessary but not sufficient for an *interactive* run: opening
-`\\?\GLOBALROOT\Device\PawnIO` also requires **elevation**. An unelevated `--diagnose` therefore
-prints `PawnIO: installed` and still shows no CPU temperature; it prints an `Elevated:` line and
-warns when that happens. The installed service runs as LocalSystem, so this affects only
-`--diagnose` and `--layout-preview` from an ordinary shell.
+Installing the driver is necessary but not sufficient: opening
+`\\?\GLOBALROOT\Device\PawnIO` also requires **elevation**. All executable modes now enforce that
+requirement before loading configuration or sensors, so normal diagnostic and preview output must
+show `Elevated: True`. The installed service runs as LocalSystem and satisfies the same check.
 
 `Install-Service.ps1` verifies the bundled installer's Authenticode signature and refuses to launch
 it unless the status is `Valid` and the signer is `CN=namazso.eu`. When prompted by the wizard,
@@ -131,13 +160,15 @@ The repository pins .NET SDK 10.0.302. From the repository root:
 .\scripts\Build-Release.ps1
 ```
 
-The pipeline restores locked dependencies, runs all tests, publishes the self-contained executable, copies operational documentation and service scripts, and writes per-file SHA-256 hashes. Its runtime artifact is an uncompressed, time-stamped folder:
+The pipeline restores locked dependencies, runs all tests, publishes the self-contained runtime, copies operational documentation and service scripts, and writes per-file SHA-256 hashes. Its deployable artifact is an uncompressed, time-stamped folder:
 
 ```text
 artifacts\Cfa835SystemMonitor-<commit>-win-x64-<yyyyMMdd-HHmmss>\
 ```
 
-It does not package the runtime as a ZIP. Every release folder contains `COMMIT.txt`, `BUILD-TIMESTAMP.txt`, `SHA256SUMS.txt`, this README, the detailed changelog, and the deployment guide.
+It does not package the runtime as a ZIP or a standalone executable. Copy the whole folder. Every
+release contains `COMMIT.txt`, `BUILD-TIMESTAMP.txt`, `SHA256SUMS.txt`, this README, the detailed
+changelog, and the deployment guide.
 
 ## Deployment
 

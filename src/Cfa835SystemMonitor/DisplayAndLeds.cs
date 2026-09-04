@@ -80,6 +80,7 @@ public sealed class PageController(
     private bool _confirmYes;
     private int _pendingSeconds = shutdownOptions.CountdownSeconds;
     private DateTimeOffset _shutdownDeadline;
+    private bool _replacementPending;
 
     public bool AutoCycle { get; private set; } = options.AutoCycleOnStart;
 
@@ -114,6 +115,11 @@ public sealed class PageController(
         bool handled;
         lock (_sync)
         {
+            if (_replacementPending)
+            {
+                return false;
+            }
+
             if (now - _lastKeyAt < TimeSpan.FromMilliseconds(100))
             {
                 return false;
@@ -145,10 +151,50 @@ public sealed class PageController(
         }
         else if (action == PendingShutdownAction.Abort)
         {
-            shutdownExecutor.Abort();
+            _ = shutdownExecutor.TryAbort();
         }
 
         return handled;
+    }
+
+    /// <summary>
+    /// Prevents further keypad actions and cancels a shutdown armed by this instance before its
+    /// device ownership is handed to a replacement process.
+    /// </summary>
+    public ReplacementPreparationResult PrepareForReplacement()
+    {
+        bool shutdownWasPending;
+        lock (_sync)
+        {
+            _replacementPending = true;
+            shutdownWasPending = _shutdownState == ShutdownUiState.CountingDown;
+        }
+
+        if (!shutdownWasPending)
+        {
+            return ReplacementPreparationResult.Ready();
+        }
+
+        if (!shutdownExecutor.TryAbort())
+        {
+            lock (_sync)
+            {
+                _replacementPending = false;
+            }
+
+            return ReplacementPreparationResult.Rejected(
+                "The pending Windows shutdown could not be cancelled; the running instance was left active.",
+                shutdownWasPending: true);
+        }
+
+        lock (_sync)
+        {
+            _shutdownState = ShutdownUiState.Idle;
+            _pageIndex = 0;
+            AutoCycle = false;
+        }
+
+        return ReplacementPreparationResult.Ready(shutdownWasPending: true, shutdownCancelled: true);
     }
 
     private bool HandleIdleKey(CfaKey key, DateTimeOffset now)

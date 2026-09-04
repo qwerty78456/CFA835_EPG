@@ -6,7 +6,7 @@ This application uses the following packages. Their licenses remain with their r
 
 - LibreHardwareMonitorLib — Mozilla Public License 2.0 and the additional licenses identified by the LibreHardwareMonitor project: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
 - Microsoft.Extensions.Hosting and Microsoft.Extensions.Logging.Console — MIT License: https://github.com/dotnet/runtime
-- System.IO.Ports — MIT License: https://github.com/dotnet/runtime
+- System.IO.Ports, System.ServiceProcess.ServiceController, and the latter's System.Diagnostics.EventLog dependency — MIT License: https://github.com/dotnet/runtime
 - System.Drawing.Common and its Microsoft.Win32.SystemEvents dependency — MIT License: https://github.com/dotnet/runtime
 - xUnit.net test packages — Apache License 2.0: https://github.com/xunit/xunit
 

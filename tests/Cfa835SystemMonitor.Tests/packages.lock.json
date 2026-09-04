@@ -493,8 +493,8 @@
       },
       "System.Diagnostics.EventLog": {
         "type": "Transitive",
-        "resolved": "10.0.0",
-        "contentHash": "uaFRda9NjtbJRkdx311eXlAA3n2em7223c1A8d1VWyl+4FL9vkG7y2lpPfBU9HYdj/9KgdRNdn1vFK8ZYCYT/A=="
+        "resolved": "10.0.3",
+        "contentHash": "+bZnyzt0/vt4g3QSllhsRNGTpa09p7Juy5K8spcK73cOTOefu4+HoY89hZOgIOmzB5A4hqPyEDKnzra7KKnhZw=="
       },
       "System.Drawing.Common": {
         "type": "Transitive",
@@ -523,6 +523,14 @@
         "contentHash": "eFftuy3i844lVKCb4lJvvjKfcvPVcW8KrAdSaIOcRL42/Fisj46hwUs8Bky+4avzMe5Snm5t7aSayOI1mybYXg==",
         "dependencies": {
           "System.CodeDom": "10.0.2"
+        }
+      },
+      "System.ServiceProcess.ServiceController": {
+        "type": "Transitive",
+        "resolved": "10.0.3",
+        "contentHash": "lOvEbCrTMl4EB7Ckp1suhgcnUEwUs2qRWLYZvquKU33hpRLZfjTXBSHFWQiRshxqd7dA+Nj9Yiw8EbOwd3T/eQ==",
+        "dependencies": {
+          "System.Diagnostics.EventLog": "10.0.3"
         }
       },
       "xunit.abstractions": {
@@ -572,7 +580,8 @@
           "Microsoft.Extensions.Hosting": "[10.0.0, )",
           "Microsoft.Extensions.Logging.Console": "[10.0.0, )",
           "System.Drawing.Common": "[10.0.0, )",
-          "System.IO.Ports": "[10.0.3, )"
+          "System.IO.Ports": "[10.0.3, )",
+          "System.ServiceProcess.ServiceController": "[10.0.3, )"
         }
       }
     }

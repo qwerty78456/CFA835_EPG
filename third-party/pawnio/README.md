@@ -21,6 +21,10 @@ Windows with driver signature enforcement it must carry a Microsoft-attested sig
 bundling removes is the download and the version guesswork; `scripts/Install-Service.ps1` runs the
 installer below when the driver is absent.
 
+The application itself requires an elevated Administrator token for every mode. That guarantees the
+process-side permission check, but it does not install or start PawnIO; the driver setup above remains
+necessary for CPU temperature readings.
+
 ## Contents and provenance
 
 | File | SHA-256 | Source |
@@ -87,4 +91,5 @@ needed. Keep the three files together whenever this driver is redistributed.
 3. Download the matching source tag from <https://github.com/namazso/PawnIO> and replace the archive
    and `COPYING`. The source must correspond to the binary, not merely be the newest commit.
 4. Update the hashes, sizes, version, and commit id in the table above.
-5. Update the version stated in `README.md`, `DEPLOYMENT.md`, and `CLAUDE.md`.
+5. Update the version stated in `README.md`, `DEPLOYMENT.md`, `CLAUDE.md`, and
+   `THIRD-PARTY-NOTICES.md`.

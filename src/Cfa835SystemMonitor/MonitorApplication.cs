@@ -7,6 +7,7 @@ public sealed class MonitorApplication
     private readonly MonitorOptions _options;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<MonitorApplication> _logger;
+    private PageController? _activePages;
 
     public MonitorApplication(MonitorOptions options, ILoggerFactory loggerFactory)
     {
@@ -42,6 +43,7 @@ public sealed class MonitorApplication
             _options.Shutdown,
             new WindowsShutdownExecutor(_loggerFactory.CreateLogger<WindowsShutdownExecutor>()),
             graphic?.Layout.Descriptors());
+        Volatile.Write(ref _activePages, pages);
         int retrySeconds = 1;
 
         while (!cancellationToken.IsCancellationRequested)
@@ -157,8 +159,16 @@ public sealed class MonitorApplication
             retrySeconds = Math.Min(30, retrySeconds * 2);
         }
 
+        Volatile.Write(ref _activePages, null);
         _logger.LogInformation("CFA835 monitor stopped");
         return 0;
+    }
+
+    /// <summary>Prepares any active monitor state for a controlled process handover.</summary>
+    public ReplacementPreparationResult PrepareForReplacement()
+    {
+        PageController? pages = Volatile.Read(ref _activePages);
+        return pages?.PrepareForReplacement() ?? ReplacementPreparationResult.Ready();
     }
 
     private static bool IsElevated() => TemperatureMonitor.IsElevated();
@@ -175,8 +185,8 @@ public sealed class MonitorApplication
 
     /// <summary>
     /// Dumps every sensor LibreHardwareMonitor exposes. This is the tool for answering "why is the
-    /// temperature N/A" — it distinguishes a missing driver, a missing elevation, and hardware whose
-    /// sensors genuinely are not enumerated.
+    /// temperature N/A" — it distinguishes an unavailable ring-0 path from hardware whose sensors
+    /// genuinely are not enumerated.
     /// </summary>
     public async Task<int> ListSensorsAsync(CancellationToken cancellationToken)
     {
@@ -293,8 +303,8 @@ public sealed class MonitorApplication
     public async Task<int> LayoutPreviewAsync(CommandLineOptions commandLine, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        // Reported here too: an unelevated preview silently renders cpu.temperature as its fallback,
-        // which reads as a layout problem when it is a permissions one.
+        // Retain the effective-token value in preview output as deployment evidence. Program rejects
+        // an unelevated invocation before this mode is reached.
         Console.WriteLine($"Elevated: {IsElevated()}");
         GraphicRuntime runtime = GraphicRuntime.Create(_options, _loggerFactory);
         LayoutPage page = commandLine.PreviewPage is null

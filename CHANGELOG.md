@@ -2,6 +2,36 @@
 
 All notable changes are recorded here in reverse chronological order. Dates use the builder's local calendar date; `COMMIT.txt` in each release folder is the authoritative source revision.
 
+## 2026-09-04 — Elevated single-owner runtime
+
+### Added
+
+- The executable now carries a `requireAdministrator` manifest and verifies its elevated token again at startup, returning code 77 when the effective token is not an enabled member of Administrators. This applies to every command mode; the LocalSystem service already satisfies the requirement.
+- Monitor, diagnostic, and hardware-test processes now coordinate ownership of the CFA835 through separate protected machine-wide startup/device mutexes and an Administrators/LocalSystem-only named-pipe handover endpoint. A new foreground process asks an existing foreground process to clean up and release the COM port before continuing.
+- A first upgrade from a build without the handover endpoint can stop verified legacy foreground processes. PID, start time, executable path, product metadata, and session are checked immediately before forced termination.
+- Added product name/description metadata to the executable for release identification and safe legacy-process verification.
+- Added ownership-policy and shutdown-handover tests, including mode scope, foreground/service replacement rules, successful countdown cancellation, and rejection when cancellation cannot be confirmed.
+
+### Changed
+
+- `Main` is synchronous so the same native thread acquires and releases each Win32 mutex; asynchronous application modes still run through their existing tasks.
+- Configuration and graphic-layout validation now finish before ownership arbitration, preventing a bad new configuration from stopping a healthy foreground monitor.
+- The shutdown abstraction now returns the result of `shutdown.exe /a`. A monitor being handed over blocks further keypad actions, cancels its own pending countdown, and proceeds only after Windows confirms cancellation or reports that no shutdown is pending.
+- Added `System.ServiceProcess.ServiceController` 10.0.3 for explicit service-state detection; locked dependency files now resolve its `System.Diagnostics.EventLog` dependency at 10.0.3.
+- Updated CLI help and every tracked Markdown guide for the elevated startup contract, automatic foreground handover, exit codes, current repository layout, remote production acceptance, and clean-Windows deployment. The guides now state explicitly that self-contained removes the .NET prerequisite but the entire release directory must be copied; the Crystalfontz driver, optional PawnIO CPU-temperature driver, and service-only NSSM requirement remain separate.
+- Updated third-party notices to cover the new .NET runtime packages and clarified that bundling PawnIO removes its download, not its privileged driver-install step.
+
+### Safety
+
+- Foreground processes never stop or replace the NSSM service, and the service never stops a foreground process. The later starter exits with code 75; the service can be retried by NSSM.
+- A controlled handover cancels any Windows shutdown countdown owned by the old process before cancelling it. If cancellation fails, replacement is rejected. Legacy replacement also refuses to force termination unless `shutdown.exe /a` succeeds or reports that no shutdown is pending.
+- `--layout-preview` and `--list-sensors` do not claim CFA835 ownership and remain safe to run alongside the live monitor.
+- The application is not Authenticode-signed yet, so Windows may identify it as an unknown publisher in the UAC prompt. Production files must remain under administrator-controlled directories.
+
+### Validation
+
+- Automated tests and a warning-as-error Release build cover the code path without opening a COM port. The local development machine has no CFA835; UAC, service/foreground arbitration, legacy replacement, and physical LCD/keypad/LED behavior remain explicit production-remote acceptance steps.
+
 ## 2026-08-26 — Port resolution
 
 ### Fixed

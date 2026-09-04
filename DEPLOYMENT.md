@@ -1,6 +1,6 @@
 # CFA835 System Monitor deployment guide
 
-This guide covers Windows deployment of a self-contained CFA835 System Monitor release. Commands use PowerShell syntax and assume an x64 machine. The CFA835 serial port is exclusive: never run two monitor, diagnostic, or hardware-test processes at the same time.
+This guide covers Windows deployment of a self-contained CFA835 System Monitor release. Commands use PowerShell syntax and assume an x64 machine. The CFA835 serial port is exclusive; the application coordinates monitor, diagnostic, and hardware-test ownership across Windows sessions.
 
 ## 1. Release artifact and provenance
 
@@ -13,18 +13,21 @@ artifacts\Cfa835SystemMonitor-<commit>-win-x64-<yyyyMMdd-HHmmss>\
 Each directory is immutable deployment input and contains:
 
 - `Cfa835SystemMonitor.exe` and its self-contained .NET runtime files;
-- `appsettings.json`, the shipped configuration example;
+- `appsettings.json` and `layout.json`, the shipped configuration examples;
 - `COMMIT.txt`, containing the 12-character source commit;
 - `BUILD-TIMESTAMP.txt`, containing the builder's timestamp and UTC offset;
 - `SHA256SUMS.txt`, containing hashes of every other shipped file;
-- `README.md`, `CHANGELOG.md`, `DEPLOYMENT.md`, and `THIRD-PARTY-NOTICES.md`;
-- `Install-Service.ps1`, `Update-Service.ps1`, and `Uninstall-Service.ps1`.
+- `README.md`, `CHANGELOG.md`, `DEPLOYMENT.md`, `THIRD-PARTY-NOTICES.md`, and `LICENSE`;
+- `Install-Service.ps1`, `Update-Service.ps1`, and `Uninstall-Service.ps1`;
+- the complete `third-party\pawnio\` redistribution, including the signed installer, licence, and
+  corresponding source archive.
 
 Do not edit a release folder in place. Keep each timestamped folder intact so it remains a reliable rollback target.
 
 ## 2. Monitored-machine prerequisites
 
-Install these before launching the application:
+Self-contained removes the .NET installation requirement, not the operating-system drivers. A clean
+Windows x64 target still needs the following:
 
 1. Windows 10 or later, x64.
 2. The Crystalfontz USB virtual-COM driver for CFA735/CFA835 devices.
@@ -39,7 +42,7 @@ Install these before launching the application:
    ```
 
    PawnIO is GPLv2 with a device-IOCTL exception. `third-party\pawnio\` also carries `COPYING` and the corresponding source archive, which together satisfy GPLv2 section 3. Keep the whole directory together when copying a release onto removable media.
-4. For service mode only, NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe`, or pass an alternate `-NssmPath`.
+4. For service mode only, NSSM x64 2.24-101 at `C:\Program Files\nssm\win64\nssm.exe`, or pass an alternate `-NssmPath`. NSSM is not bundled. It is unnecessary for foreground mode.
 5. For graphic mode only, the font families named in `layout.fontFamilies`. The default chain is `Bahnschrift SemiLight` then `Times New Roman`, both of which ship with Windows 10 and later. Verify before deployment rather than discovering a silent fallback on the panel:
 
    ```powershell
@@ -47,7 +50,10 @@ Install these before launching the application:
    (New-Object System.Drawing.Text.InstalledFontCollection).Families.Name -contains 'Bahnschrift SemiLight'
    ```
 
-The release is self-contained; the monitored machine does not need the .NET SDK or runtime. Graphic mode uses GDI+, which is an operating-system component, so it adds no install step of its own.
+The monitored machine does not need the .NET SDK or runtime. The release is a self-contained
+**directory**, not a single-file executable: copy every file in the timestamped folder and launch
+the `.exe` in place. Graphic mode uses GDI+, which is an operating-system component, so it adds no
+install step of its own.
 
 Confirm the device appears before deployment:
 
@@ -153,39 +159,61 @@ An invalid `layout.json` — a rectangle leaving the 244x68 panel, an unknown `s
 
 `layout.refreshMs` (100-60000) sets the graphic repaint cadence and replaces `sampling.displayMs` for this mode. 250 ms is a comfortable default; because only changed fields are retransmitted, a ticking clock costs roughly 1.4 KB per second.
 
-## 5. Stop competing COM-port owners
+## 5. CFA835 ownership and process replacement
 
-Identify monitor instances before diagnostics, upgrades, or foreground launches:
+Every invocation requires an elevated Administrator token. The application manifest requests UAC
+elevation automatically; the executable is not yet Authenticode-signed, so the prompt may say
+`Unknown publisher`. Run production copies only from an administrator-controlled release or install
+directory.
+
+Monitor, diagnostic, and hardware-test modes use protected machine-wide ownership objects. A new
+foreground process replaces an existing foreground instance by asking it to cancel any shutdown
+countdown, restore/clear the CFA835 as appropriate, close the COM port, and exit. A legacy build that
+has no control endpoint is stopped only after its process identity has been verified. Layout preview
+and sensor-list modes do not open the COM port or participate in replacement.
+
+The startup sequence validates configuration and `layout.json` before requesting a handover, so a
+bad new release cannot stop a healthy foreground monitor. Exit code 77 means the runtime
+Administrator check failed, code 75 means ownership was deliberately left with another process, and
+code 78 means the platform, configuration, or layout is invalid.
+
+Service and foreground ownership never replace one another:
+
+- if service `Cfa835SystemMonitor` is active, a foreground hardware mode logs the service state and
+  exits with code 75;
+- if the service starts while a foreground process owns the device, it exits with code 75 without
+  touching that process; NSSM retries it using the configured restart delay;
+- stop the service explicitly before foreground diagnostics or hardware tests.
+
+Inspect ownership when preparing deployment or investigating code 75:
 
 ```powershell
 Get-Process -Name Cfa835SystemMonitor -ErrorAction SilentlyContinue |
     Select-Object Id, StartTime, Path
 ```
 
-If Path is blank because the process is elevated, run the command from an elevated PowerShell prompt. For a service deployment, stop the service instead of killing its process:
+If Path is blank, run the command from an elevated PowerShell prompt. Stop a service through the
+Service Control Manager rather than killing its child process:
 
 ```powershell
 Stop-Service Cfa835SystemMonitor
 ```
 
-For a foreground deployment, record the exact executable path, then stop only the verified process:
-
-```powershell
-Stop-Process -Id <verified-pid>
-```
-
-`System.UnauthorizedAccessException: Access to the path 'COM3' is denied` means another process owns the serial port or the current shell lacks permission to manage its process. Do not start additional copies and hope one wins.
+Do not use `Stop-Process` for the NSSM child: NSSM would immediately restart it. A COM access-denied
+error after ownership coordination indicates a non-Cfa835SystemMonitor program owns the port; find
+that program rather than repeatedly starting this one.
 
 ## 6. Read-only diagnostic acceptance
 
-With no monitor process or service holding the COM port:
+Stop the service first. A foreground monitor is replaced automatically by this diagnostic:
 
 ```powershell
 .\Cfa835SystemMonitor.exe --diagnose
 if ($LASTEXITCODE -ne 0) { throw "Diagnostics failed with exit code $LASTEXITCODE" }
 ```
 
-Run it **from an elevated shell**. Opening the PawnIO device requires elevation, so an unelevated diagnostic reports `PawnIO: installed` and still shows no CPU temperature. The diagnostic prints an `Elevated:` line and warns when that is the situation. The service itself runs as LocalSystem and is always elevated, so this affects interactive runs only.
+Run it from an elevated shell. The manifest also requests elevation when launched from Explorer or an
+ordinary terminal. The service itself runs as LocalSystem and already satisfies this requirement.
 
 A passing diagnostic must report all of the following:
 
@@ -216,12 +244,6 @@ Foreground mode is appropriate for interactive testing or a machine where the us
 ```powershell
 $releasePath = 'E:\path\to\Cfa835SystemMonitor-<commit>-win-x64-<timestamp>'
 $exe = Join-Path $releasePath 'Cfa835SystemMonitor.exe'
-Start-Process -FilePath $exe -WorkingDirectory $releasePath -WindowStyle Hidden
-```
-
-When elevation is required for PawnIO or process replacement:
-
-```powershell
 Start-Process -FilePath $exe -Verb RunAs -WorkingDirectory $releasePath -WindowStyle Hidden
 ```
 
@@ -283,7 +305,23 @@ For foreground mode, stop the exact new PID and launch the exact older executabl
 
 ## 10. Physical CFA835 acceptance test
 
-This is the authoritative check that a deployment manifested on hardware.
+The local development machine has no CFA835. Unit and integration tests therefore use fake
+transports and do not open a real COM port. Perform this authoritative hardware check remotely on
+the production machine during an approved maintenance window, with the previous release ready for
+rollback.
+
+Before checking the screen:
+
+1. Cancel the UAC prompt once and confirm no foreground process is created; then approve it and
+   confirm the process runs elevated.
+2. With the service running, attempt `--diagnose`; confirm it exits with code 75 and leaves the
+   service PID unchanged. Stop the service explicitly before continuing.
+3. Start two foreground monitors in sequence; confirm the first exits cleanly and only the second
+   owns the COM port.
+4. Exercise forced legacy replacement only in this maintenance window. Do not test forced process
+   termination or shutdown cancellation during normal production operation.
+
+Then perform the display acceptance sequence:
 
 1. Confirm exactly one `Cfa835SystemMonitor` process is running.
 2. Confirm that process resolves to the intended timestamped release and its product version contains the intended commit.
@@ -324,7 +362,7 @@ For service mode, also verify the service remains Running after the acceptance s
 The builder is Windows; use PowerShell paths and commands throughout. From the builder checkout:
 
 ```powershell
-Set-Location 'D:\cfa835\Cfa835SystemMonitor-640d1d649e28-source'
+Set-Location 'D:\cfa835\CFA835_EPG'
 git fetch origin
 git switch main
 git pull --ff-only origin main
@@ -335,7 +373,7 @@ git status --short --branch
 The final build output prints the exact uncompressed release directory. Copy that directory recursively to the monitored machine without compressing it:
 
 ```powershell
-scp.exe -r User@builder:'D:/cfa835/Cfa835SystemMonitor-640d1d649e28-source/artifacts/Cfa835SystemMonitor-<commit>-win-x64-<timestamp>' 'E:\releases\'
+scp.exe -r User@builder:'D:/cfa835/CFA835_EPG/artifacts/Cfa835SystemMonitor-<commit>-win-x64-<timestamp>' 'E:\releases\'
 ```
 
 After transfer, re-run section 3 on the monitored machine. Network transfer success alone is not deployment success; complete sections 6, 7 or 8, and 10.
@@ -353,30 +391,31 @@ Symptom: `Opened CFA835 transport on COMx` followed by `CFA command 0x01 timed o
 
 ### COM port access denied
 
-- Find and stop the single existing monitor/service owner.
+- If startup returned code 75, inspect whether the service or a foreground owner has priority under section 5.
 - Check Device Manager and `[System.IO.Ports.SerialPort]::GetPortNames()`.
 - Confirm `device.fallbackPort` matches the actual port.
-- Do not run diagnostics while the live monitor owns the port.
+- If ownership coordination succeeded, look for another program outside Cfa835SystemMonitor that has the port open.
 
 ### New files copied but old screen remains
 
-- The old process is still running from an older folder.
 - Resolve the live process path and embedded ProductVersion; do not trust folder timestamps or a completed copy operation.
-- Stop the old PID or service, launch the intended executable, and repeat the physical acceptance test.
+- For foreground mode, launch the intended executable: it should request a clean handover from the old foreground process. If replacement exits with code 75, use section 5 to identify the owner rather than killing an unverified process.
+- For service mode, use `Update-Service.ps1`; copying files alone neither changes the installed service path nor restarts it.
+- Repeat the physical acceptance test only after the live path and ProductVersion identify the intended release.
 
 ### Temperature is `N/A`
 
 - **Run `--list-sensors` from an elevated shell first.** It dumps every sensor LibreHardwareMonitor exposes and ends with a verdict, exiting non-zero when no CPU temperature has a plausible value. The three outcomes it separates:
-  - a CPU temperature sensor exists and reads `0.0` — the ring-0 read was denied, so the driver is missing or the process is not elevated;
+  - a CPU temperature sensor exists and reads `0.0` — the ring-0 path is unavailable, normally because PawnIO is missing, not loaded, or unreadable;
   - no CPU temperature sensor is enumerated at all — the CPU is not supported by this LibreHardwareMonitor build;
   - a plausible value is present — the sensor path works and any `N/A` on the display is a layout or selection problem instead.
-- **Check `Elevated:` first.** `PawnIO: installed` only proves the driver is registered; opening `\\?\GLOBALROOT\Device\PawnIO` additionally requires elevation, and an unelevated process gets `Access is denied`. `PawnIO: installed` together with `Elevated: False` and a missing CPU temperature is that case, not a driver fault — re-run from an elevated shell. The installed service runs as LocalSystem, so this only ever affects interactive `--diagnose` and `--layout-preview` runs.
+- **Check `Elevated:` first.** Every successful executable invocation must print `True` in modes that report it. A process without an enabled Administrators SID exits with code 77 before sensor access. `PawnIO: installed` only proves the driver is registered; opening `\\?\GLOBALROOT\Device\PawnIO` also depends on the driver service being loaded and accessible. The installed service runs as LocalSystem.
 - Confirm PawnIO normal edition is installed and readable by the process identity. `PawnIO installed: False` in the log is the usual answer on its own: without ring-0 access LibreHardwareMonitor cannot read CPU temperatures on **either** AMD or Intel, so a CPU-vendor difference between the build workstation and the monitored machine is not the explanation. Install it from the bundled `third-party\pawnio\PawnIO_setup.exe`, or re-run `Install-Service.ps1`, which does the same. Confirm afterwards that the driver service is actually loaded, not merely that the installer ran:
 
   ```powershell
   Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO' | Select-Object DisplayName, DisplayVersion
   ```
-- Run `--diagnose` with the monitor stopped.
+- Stop the service before `--diagnose`; an existing foreground monitor is handed over automatically.
 - Review stdout/stderr logs for LibreHardwareMonitor inventory or access errors.
 - **The Windows ACPI thermal-zone fallback does not feed a `cpu.temperature` field.** `Windows ACPI thermal-zone fallback initialized with N counter(s)` only means the counters opened. Those readings carry `IsCpu = false` and are consulted solely for the text-mode `TEMPERATURE` row and the `system.temperature` layout source; `cpu.temperature` and the thermal-warning LED come from LibreHardwareMonitor CPU sensors only. A machine with a working ACPI zone but no PawnIO therefore shows a system temperature and `N/A` for CPU temperature, which is correct behaviour, not a fault.
 - ACPI thermal zones are largely a laptop and OEM feature. Many desktop boards expose either no zone or a near-ambient stub — a value such as 16 C from `\_tz.tz10` is the firmware reporting a placeholder, not a misread. Use `Get-Counter '\Thermal Zone Information(*)\Temperature'` to see the raw Kelvin values.

@@ -200,6 +200,54 @@ public sealed class DisplayTests
     }
 
     [Fact]
+    public void ReplacementCancelsPendingShutdownAndBlocksFurtherKeys()
+    {
+        FakeShutdownExecutor executor = new();
+        PageController pages = Controller(_display, executor);
+        DateTimeOffset now = StartCountdown(pages);
+
+        ReplacementPreparationResult result = pages.PrepareForReplacement();
+
+        Assert.True(result.Accepted);
+        Assert.True(result.ShutdownWasPending);
+        Assert.True(result.ShutdownCancelled);
+        Assert.Equal(1, executor.AbortCount);
+        Assert.Equal(ShutdownUiState.Idle, pages.ShutdownState);
+        Assert.Equal(PageCategory.DateTime, pages.Category);
+        Assert.False(pages.HandleKey(CfaKey.Right, now.AddMilliseconds(200)));
+    }
+
+    [Fact]
+    public void ReplacementContinuesWithoutAbortWhenNoShutdownIsPending()
+    {
+        FakeShutdownExecutor executor = new();
+        PageController pages = Controller(_display, executor);
+
+        ReplacementPreparationResult result = pages.PrepareForReplacement();
+
+        Assert.True(result.Accepted);
+        Assert.False(result.ShutdownWasPending);
+        Assert.False(result.ShutdownCancelled);
+        Assert.Equal(0, executor.AbortCount);
+    }
+
+    [Fact]
+    public void ReplacementIsRejectedWhenPendingShutdownCannotBeCancelled()
+    {
+        FakeShutdownExecutor executor = new() { AbortSucceeds = false };
+        PageController pages = Controller(_display, executor);
+        DateTimeOffset now = StartCountdown(pages);
+
+        ReplacementPreparationResult result = pages.PrepareForReplacement();
+
+        Assert.False(result.Accepted);
+        Assert.True(result.ShutdownWasPending);
+        Assert.False(result.ShutdownCancelled);
+        Assert.Equal(ShutdownUiState.CountingDown, pages.ShutdownState);
+        Assert.False(pages.HandleKey(CfaKey.Left, now.AddMilliseconds(200)));
+    }
+
+    [Fact]
     public void CountdownBlocksPageSwitchingAndTick()
     {
         FakeShutdownExecutor executor = new();
@@ -386,8 +434,13 @@ public sealed class DisplayTests
     {
         public List<int> Requested { get; } = [];
         public int AbortCount { get; private set; }
+        public bool AbortSucceeds { get; init; } = true;
         public void RequestShutdown(int seconds) => Requested.Add(seconds);
-        public void Abort() => AbortCount++;
+        public bool TryAbort()
+        {
+            AbortCount++;
+            return AbortSucceeds;
+        }
     }
 
     private static MetricSnapshot Snapshot() => new(
