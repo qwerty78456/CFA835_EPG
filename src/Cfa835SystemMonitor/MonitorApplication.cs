@@ -23,52 +23,73 @@ public sealed class MonitorApplication
             throw new InvalidOperationException("Simulation is disabled in non-interactive service sessions.");
         }
 
-        IMetricSource baseMetrics = new WindowsMetricSource(_options, _loggerFactory);
+        // Built once and never replaced, even by a configuration reload: rebuilding would reset the
+        // CPU/disk/network deltas and re-open LibreHardwareMonitor, which takes seconds.
+        WindowsMetricSource baseMetrics = new(_options, _loggerFactory);
         using IMetricSource metrics = simulation is null ? baseMetrics : new SimulationMetricSource(baseMetrics, simulation);
         if (simulation is not null)
         {
             _logger.LogWarning("Simulation mode active: {Simulation}", simulation);
         }
 
-        CfaDeviceLocator locator = new(_options.Device);
+        // Layout parsing, font rasterization and PNG decoding happen once per configuration
+        // snapshot -- here, and on a background thread when a live reload brings a new one -- never
+        // inside the render or reconnect loop: none of it depends on the device and all of it is
+        // expensive.
+        ConfigSnapshotBuilder builder = new(_options.ConfigPath);
+        ConfigSnapshot initial = builder.BuildFrom(_options, _loggerFactory);
 
-        // Layout parsing, font rasterization and PNG decoding happen once, outside the reconnect
-        // loop: none of it depends on the device and all of it is expensive.
-        GraphicRuntime? graphic = _options.Display.ResolvedMode == DisplayMode.Graphic
-            ? GraphicRuntime.Create(_options, _loggerFactory)
-            : null;
-
+        // The controller is shared with the serial reader thread (keys) and the pipe server
+        // (handover), so a reload reconfigures it in place rather than replacing it.
         PageController pages = new(
-            _options.Display,
-            _options.Shutdown,
+            initial.Options.Display,
+            initial.Options.Shutdown,
             new WindowsShutdownExecutor(_loggerFactory.CreateLogger<WindowsShutdownExecutor>()),
-            graphic?.Layout.Descriptors());
+            initial.Graphic?.Layout.Descriptors());
         Volatile.Write(ref _activePages, pages);
+        MonitorRuntimeState state = new(initial, pages);
+        ConfigReloader reloader = new(initial, builder, _loggerFactory.CreateLogger<ConfigReloader>());
+        ILogger<GraphicScreenWriter> writerLogger = _loggerFactory.CreateLogger<GraphicScreenWriter>();
+        ConfigSnapshot? deferred = null;
+        if (initial.Options.Reload.Enabled)
+        {
+            _logger.LogInformation(
+                "Live configuration reload is on: watching {Files} every {PollMs} ms",
+                string.Join(", ", initial.Files.Select(file => file.Path)),
+                initial.Options.Reload.PollMs);
+        }
+        else
+        {
+            _logger.LogInformation("Live configuration reload is off (reload.enabled = false)");
+        }
+
         int retrySeconds = 1;
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            // Disconnected here, so applying a reload is pure reference swaps; device.* edits made
+            // during an outage are picked up by the locator built just below.
+            ApplyReload(DateTimeOffset.Now);
+
             ICfaTransport transport = new SerialCfaTransport(_loggerFactory.CreateLogger<SerialCfaTransport>());
             await using Cfa835Device device = new(transport, _loggerFactory.CreateLogger<Cfa835Device>());
             ScreenWriter screen = new();
-            GraphicScreenWriter? graphicScreen = graphic is null
-                ? null
-                : new GraphicScreenWriter(
-                    graphic.Composer, graphic.Layout, _loggerFactory.CreateLogger<GraphicScreenWriter>());
-            LedStateMachine leds = new(_options.Thermal);
+            GraphicScreenWriter? graphicScreen = null;
+            LedStateMachine leds = new(state.Options.Thermal);
+
+            // What this connection's panel has been initialised to, and for which configuration
+            // generation. Unknown on a fresh connection, so the first iteration initialises it.
+            DeviceDisplay applied = default;
+            int appliedGeneration = -1;
             int forceRender = 1;
 
             try
             {
+                CfaDeviceLocator locator = new(state.Options.Device);
                 string port = await ResolveVerifiedPortAsync(locator, cancellationToken).ConfigureAwait(false);
                 string version = await device.OpenAsync(port, enableKeyReports: true, cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation("Connected to {Version} on {Port}", version, port);
                 retrySeconds = 1;
-
-                if (graphicScreen is not null)
-                {
-                    await graphicScreen.InitializeAsync(device, cancellationToken).ConfigureAwait(false);
-                }
 
                 device.KeyPressed += key =>
                 {
@@ -83,6 +104,28 @@ public sealed class MonitorApplication
                 while (device.IsOpen && !cancellationToken.IsCancellationRequested)
                 {
                     DateTimeOffset now = DateTimeOffset.Now;
+
+                    // 1. Swap in a reloaded configuration (no-throw reference assignments only).
+                    if (ApplyReload(now))
+                    {
+                        leds.Reconfigure(state.Options.Thermal);
+                    }
+
+                    // 2. Bring the panel in line with it before the next frame. The state already
+                    //    points at the new configuration, so if a command throws here the normal
+                    //    reconnect path comes back up initialised for the new configuration.
+                    if (appliedGeneration != state.Generation)
+                    {
+                        DisplayTransition transition = MonitorRuntimeState.PlanTransition(
+                            applied, state.Graphic, state.GraphicEverActive);
+                        applied = default;
+                        graphicScreen = await DisplayTransitions.ExecuteAsync(
+                            transition, device, state.Graphic, screen, writerLogger, cancellationToken).ConfigureAwait(false);
+                        applied = MonitorRuntimeState.After(state.Graphic);
+                        appliedGeneration = state.Generation;
+                        nextDisplay = DateTimeOffset.MinValue;
+                    }
+
                     MetricSnapshot snapshot = metrics.Sample(now);
                     if (pages.Tick(now))
                     {
@@ -91,18 +134,20 @@ public sealed class MonitorApplication
 
                     if (now >= nextDisplay || Interlocked.Exchange(ref forceRender, 0) == 1)
                     {
+                        GraphicRuntime? graphic = state.Graphic;
                         if (graphic is not null && graphicScreen is not null)
                         {
+                            PageView view = pages.View(now);
                             FieldContext context = new(
                                 snapshot,
-                                pages.AutoCycle,
-                                pages.ShutdownState,
-                                pages.ConfirmYesSelected,
-                                pages.PendingSeconds,
-                                pages.RemainingSeconds(now));
+                                view.AutoCycle,
+                                view.ShutdownState,
+                                view.ConfirmYesSelected,
+                                view.PendingSeconds,
+                                view.RemainingSeconds);
                             await graphicScreen.RenderAsync(
                                 device,
-                                graphic.Page(pages.CurrentPageId),
+                                graphic.Page(view.PageId),
                                 context,
                                 now,
                                 cancellationToken).ConfigureAwait(false);
@@ -110,8 +155,8 @@ public sealed class MonitorApplication
                         }
                         else
                         {
-                            await screen.RenderAsync(device, pages.Render(snapshot, _options.Thermal), cancellationToken).ConfigureAwait(false);
-                            nextDisplay = now.AddMilliseconds(_options.Sampling.DisplayMs);
+                            await screen.RenderAsync(device, pages.Render(snapshot, state.Options.Thermal), cancellationToken).ConfigureAwait(false);
+                            nextDisplay = now.AddMilliseconds(state.Options.Sampling.DisplayMs);
                         }
                     }
 
@@ -121,7 +166,7 @@ public sealed class MonitorApplication
                         await device.SetLedAsync(led, states[led].Green, states[led].Red, cancellationToken).ConfigureAwait(false);
                     }
 
-                    await Task.Delay(_options.Sampling.ActivityMs, cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(state.Options.Sampling.ActivityMs, cancellationToken).ConfigureAwait(false);
                 }
 
                 if (!cancellationToken.IsCancellationRequested)
@@ -144,7 +189,11 @@ public sealed class MonitorApplication
                 {
                     if (device.IsOpen)
                     {
-                        await device.BlankAndTurnOffAsync(cleanup.Token, graphic is not null).ConfigureAwait(false);
+                        // GraphicEverActive too: cancellation can land between a graphic -> text
+                        // swap and its device transition, leaving artwork that blank rows would not
+                        // remove. Command 6 clears both buffers, so it is always a safe superset.
+                        await device.BlankAndTurnOffAsync(
+                            cleanup.Token, state.Graphic is not null || state.GraphicEverActive).ConfigureAwait(false);
                     }
                 }
                 catch (Exception exception)
@@ -155,13 +204,82 @@ public sealed class MonitorApplication
                 break;
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(retrySeconds), cancellationToken).ConfigureAwait(false);
-            retrySeconds = Math.Min(30, retrySeconds * 2);
+            // The back-off is sliced so a configuration fix made during an outage (a corrected
+            // device.fallbackPort, say) is applied promptly and retried at once, rather than after
+            // up to 30 s of a single uninterruptible delay.
+            bool reloadedDuringBackoff = await WaitForRetryAsync(retrySeconds).ConfigureAwait(false);
+            retrySeconds = reloadedDuringBackoff ? 1 : Math.Min(30, retrySeconds * 2);
         }
 
         Volatile.Write(ref _activePages, null);
         _logger.LogInformation("CFA835 monitor stopped");
         return 0;
+
+        // Polls the reloader and, when it offers a validated configuration, switches to it. Runs on
+        // the render loop thread only. Never throws and never touches the device.
+        bool ApplyReload(DateTimeOffset now)
+        {
+            ConfigSnapshot? candidate = reloader.Poll(now);
+            if (candidate is null)
+            {
+                return false;
+            }
+
+            ReloadChanges? changes = state.TryApply(candidate);
+            if (changes is null)
+            {
+                if (!ReferenceEquals(deferred, candidate))
+                {
+                    deferred = candidate;
+                    _logger.LogInformation(
+                        "Configuration change is valid but deferred while the shutdown dialog is open or a handover is in progress; it applies when the display returns to normal");
+                }
+
+                return false;
+            }
+
+            deferred = null;
+            reloader.Accept(candidate);
+            baseMetrics.UpdateSampling(candidate.Options.Sampling);
+
+            string changed = changes.Value == ReloadChanges.None ? "no setting changed" : changes.Value.ToString();
+            if (candidate.Graphic is { } graphic)
+            {
+                _logger.LogInformation(
+                    "Configuration reloaded ({Changes}): graphic mode, {Pages} page(s), font '{Font}', current page '{Page}'",
+                    changed,
+                    graphic.Layout.Pages.Count,
+                    graphic.FontFamily,
+                    pages.CurrentPageId);
+            }
+            else
+            {
+                _logger.LogInformation("Configuration reloaded ({Changes}): text mode", changed);
+            }
+
+            if (changes.Value.HasFlag(ReloadChanges.Device))
+            {
+                _logger.LogInformation(
+                    "device.* settings changed; they apply at the next reconnect and the open port is kept");
+            }
+
+            return true;
+        }
+
+        async Task<bool> WaitForRetryAsync(int seconds)
+        {
+            DateTimeOffset until = DateTimeOffset.Now.AddSeconds(seconds);
+            while (DateTimeOffset.Now < until)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
+                if (ApplyReload(DateTimeOffset.Now))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
     }
 
     /// <summary>Prepares any active monitor state for a controlled process handover.</summary>
