@@ -18,6 +18,7 @@ All notable changes are recorded here in reverse chronological order. Dates use 
 ### Tests
 
 - The owner side of the handover is now testable without named pipes: `HandoverRequestHandler` works over a `Stream`, `ControlServer` over an `IControlListener`, and process checks sit behind `IHandoverProcesses`. New tests cover delivered and undelivered acceptance, waiting for the requester, untrackable requesters, cancelled countdowns, cancellation while waiting, foreground/service and verification rejections, and the server loop surviving a failed request. `PageController.ResumeAfterFailedHandover` is covered for keys, reload, a cancelled countdown, and an open confirmation dialog.
+- Hardware test on a physical CFA835 (`CFA835:h1.0,f0.6`, COM4) with a deterministic trigger: a genuine instance parked behind the startup mutex stood in as the requester, and its request was sent and the pipe closed before the owner answered. The owner logged the undelivered acceptance, stayed paused while that process lived (holding back a valid layout edit), resumed when it exited, applied the held edit, kept one COM connection throughout, and served a real handover afterwards. Keypad behaviour and the cancelled-countdown path were not exercised on hardware. Record: `docs/hardware-tests/2026-11-25-handover-recovery/`.
 
 ## 2026-11-25 — Live configuration reload
 

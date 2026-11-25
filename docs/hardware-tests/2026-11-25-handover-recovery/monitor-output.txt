@@ -1,0 +1,18 @@
+2026-11-25 17:55:48.672 +07:00 info: Cfa835SystemMonitor.InstanceCoordinator[0] Running Monitor process 2896 accepted CFA835 handover
+2026-11-25 17:55:52.552 +07:00 info: Cfa835SystemMonitor.TemperatureMonitor[0] Windows ACPI thermal-zone fallback initialized with 2 counter(s)
+2026-11-25 17:55:52.554 +07:00 info: Cfa835SystemMonitor.GraphicRuntime[0] Loaded layout 'D:\CFA835\hardware-test\config\layout.json': 3 page(s), refresh 250 ms, full repaint every 60s
+2026-11-25 17:55:52.596 +07:00 info: Cfa835SystemMonitor.GraphicRuntime[0] Glyph atlas ready: font 'Bahnschrift SemiLight', sizes 12, 16, 20, 24, 26
+2026-11-25 17:55:52.611 +07:00 info: Cfa835SystemMonitor.GraphicRuntime[0] Page 'DateTime' background: D:\CFA835\hardware-test\config\background.png
+2026-11-25 17:55:52.620 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Live configuration reload is on: watching D:\CFA835\hardware-test\config\appsettings.json, D:\CFA835\hardware-test\config\layout.json, D:\CFA835\hardware-test\config\background.png every 1000 ms
+2026-11-25 17:55:52.639 +07:00 info: Cfa835SystemMonitor.SerialCfaTransport[0] Opened CFA835 transport on COM4
+2026-11-25 17:55:52.651 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Found CFA835:h1.0,f0.6 on COM4 via USB VID_223B&PID_0005, serial <redacted>
+2026-11-25 17:55:52.655 +07:00 info: Cfa835SystemMonitor.SerialCfaTransport[0] Opened CFA835 transport on COM4
+2026-11-25 17:55:52.665 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Connected to CFA835:h1.0,f0.6 on COM4
+2026-11-25 17:55:57.581 +07:00 info: Cfa835SystemMonitor.TemperatureMonitor[0] LibreHardwareMonitor hardware inventory opened; PawnIO installed: True
+2026-11-25 17:56:00.822 +07:00 warn: Cfa835SystemMonitor.InstanceCoordinator[0] Accepted CFA835 handover to Diagnose process 10392 could not be confirmed to it (Pipe is broken.); keypad and configuration reload stay paused until that process exits
+2026-11-25 17:56:02.330 +07:00 warn: Cfa835SystemMonitor.MonitorApplication[0] Configuration change is valid but deferred: this process accepted a handover to a replacement that has not taken over. It applies if that handover is abandoned; restart the monitor if this persists
+2026-11-25 17:56:07.081 +07:00 info: Cfa835SystemMonitor.InstanceCoordinator[0] Handover requester process 10392 exited without taking over; the monitor resumed keypad input and configuration reload
+2026-11-25 17:56:07.182 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'
+2026-11-25 17:56:09.497 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'
+2026-11-25 17:56:11.441 +07:00 info: Cfa835SystemMonitor.InstanceCoordinator[0] Accepted CFA835 handover request from Monitor process 8124
+2026-11-25 17:56:11.464 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] CFA835 monitor stopped

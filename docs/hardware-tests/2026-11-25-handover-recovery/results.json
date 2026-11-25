@@ -1,0 +1,99 @@
+[
+  {
+    "Id": "S0",
+    "Check": "Build under test takes the panel over and holds COM4",
+    "Result": "PASS",
+    "Evidence": "PID 9204; previous owner(s) 2896"
+  },
+  {
+    "Id": "T0a",
+    "Check": "Harness holds the startup mutex",
+    "Result": "PASS",
+    "Evidence": "Global\\Cfa835SystemMonitor.Startup.v1"
+  },
+  {
+    "Id": "T0b",
+    "Check": "Stand-in requester is parked at the startup gate",
+    "Result": "PASS",
+    "Evidence": "PID 10392, D:\\CFA835\\hardware-test\\build-b0ad0a09ce11\\Cfa835SystemMonitor.exe"
+  },
+  {
+    "Id": "T1",
+    "Check": "Owner accepted, could not deliver the answer, and paused (the bug's trigger)",
+    "Result": "PASS",
+    "Evidence": "after 0s: Accepted CFA835 handover to Diagnose process 10392 could not be confirmed to it (Pipe is broken.); keypad and configuration reload stay paused until that process exits"
+  },
+  {
+    "Id": "T2",
+    "Check": "Owner did not stop for an answer nobody received",
+    "Result": "PASS",
+    "Evidence": "0 stop line(s); PID 9204 alive"
+  },
+  {
+    "Id": "T3",
+    "Check": "A valid edit is held back while the accepted requester is alive",
+    "Result": "FAIL",
+    "Evidence": "no matching line"
+  },
+  {
+    "Id": "T4",
+    "Check": "Nothing was applied during the pause",
+    "Result": "PASS",
+    "Evidence": "0 reload line(s)"
+  },
+  {
+    "Id": "T5",
+    "Check": "Stand-in was still alive for the whole pause check",
+    "Result": "PASS",
+    "Evidence": "PID 10392"
+  },
+  {
+    "Id": "T6",
+    "Check": "Owner resumes once the accepted requester has exited",
+    "Result": "PASS",
+    "Evidence": "after 0.2s: Handover requester process 10392 exited without taking over; the monitor resumed keypad input and configuration reload"
+  },
+  {
+    "Id": "T7",
+    "Check": "The held edit applies after resuming, without another save",
+    "Result": "PASS",
+    "Evidence": "after 0s: Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'"
+  },
+  {
+    "Id": "T8",
+    "Check": "A later edit applies normally",
+    "Result": "PASS",
+    "Evidence": "after 2.2s: Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'"
+  },
+  {
+    "Id": "INV1",
+    "Check": "Same process, one connection, no connection or pipe failures",
+    "Result": "PASS",
+    "Evidence": "PID 9204; 1 connect(s); 0 failure line(s)"
+  },
+  {
+    "Id": "INV2",
+    "Check": "COM4 still held after the incident",
+    "Result": "PASS",
+    "Evidence": "PID 9204"
+  },
+  {
+    "Id": "R1",
+    "Check": "The control pipe still serves a real handover afterwards (graceful, not forced)",
+    "Result": "PASS",
+    "Evidence": "2026-11-25 17:56:11.441 +07:00 info: Cfa835SystemMonitor.InstanceCoordinator[0] Accepted CFA835 handover request from Monitor process 8124"
+  },
+  {
+    "Id": "R2",
+    "Check": "Operator's monitor is back and holds COM4",
+    "Result": "FAIL",
+    "Evidence": "PID "
+  },
+  {
+    "Id": "INV3",
+    "Check": "Nothing written to stderr",
+    "Result": "PASS",
+    "Evidence": "empty"
+  }
+]
+
