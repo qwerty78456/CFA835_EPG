@@ -305,7 +305,25 @@ Optional non-default paths:
     -DataPath 'C:\ProgramData\Cfa835SystemMonitor'
 ```
 
-The script installs `Cfa835SystemMonitor` as delayed-auto-start LocalSystem, configures restart-on-failure, writes stdout/stderr logs under ProgramData, and restricts the data directory to SYSTEM and Administrators.
+The script installs `Cfa835SystemMonitor` as a LocalSystem service, configures restart-on-failure, writes stdout/stderr logs under ProgramData, and restricts the data directory to SYSTEM and Administrators. Editing the live configuration there, or reading the logs, therefore needs an elevated editor or shell.
+
+`-StartType` chooses when Windows starts the service:
+
+- `Delayed` (default): delayed automatic start, about two minutes after the other automatic services. The panel shows the CFA835's own screen through boot and logon.
+- `Automatic`: starts with the other automatic services, so the panel is normally live by the time the logon screen appears, before anyone signs in. Use it when the panel should show status from boot.
+
+```powershell
+.\Install-Service.ps1 -StartType Automatic
+```
+
+Re-running `Install-Service.ps1` applies the `-StartType` given, or `Delayed` when it is omitted, so pass the same value again on a reinstall. `Update-Service.ps1` leaves the start type unchanged. To change only the start type of an installed service:
+
+```powershell
+& 'C:\Program Files\nssm\win64\nssm.exe' set Cfa835SystemMonitor Start SERVICE_AUTO_START          # Automatic
+& 'C:\Program Files\nssm\win64\nssm.exe' set Cfa835SystemMonitor Start SERVICE_DELAYED_AUTO_START  # Delayed
+```
+
+When the service starts before the CFA835's USB serial port has been enumerated, the monitor keeps retrying with its normal reconnect back-off (at most 30 s between attempts) and connects once the port appears.
 
 Verify installation:
 

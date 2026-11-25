@@ -4,11 +4,17 @@ param(
     [string]$NssmPath = 'C:\Program Files\nssm\win64\nssm.exe',
     [string]$InstallPath = 'C:\Program Files\Cfa835SystemMonitor',
     [string]$DataPath = 'C:\ProgramData\Cfa835SystemMonitor',
-    [switch]$SkipPawnIO
+    [switch]$SkipPawnIO,
+    # Delayed: Windows starts the service about two minutes after the other automatic services, so
+    # the panel stays on the CFA835's own screen through boot and logon. Automatic: it starts with the
+    # other automatic services and the panel is normally live by the time the logon screen appears.
+    [ValidateSet('Delayed', 'Automatic')]
+    [string]$StartType = 'Delayed'
 )
 
 $ErrorActionPreference = 'Stop'
 $serviceName = 'Cfa835SystemMonitor'
+$nssmStart = @{ Delayed = 'SERVICE_DELAYED_AUTO_START'; Automatic = 'SERVICE_AUTO_START' }[$StartType]
 
 function Get-PawnIOVersion {
     # Same key LibreHardwareMonitor and Cfa835SystemMonitor probe, checked in both registry views.
@@ -117,7 +123,7 @@ if (-not $existing) {
 & $NssmPath set $serviceName ObjectName LocalSystem | Out-Null
 & $NssmPath set $serviceName DisplayName 'CFA835 System Monitor' | Out-Null
 & $NssmPath set $serviceName Description 'Displays Windows health metrics and activity on the Crystalfontz CFA835.' | Out-Null
-& $NssmPath set $serviceName Start SERVICE_DELAYED_AUTO_START | Out-Null
+& $NssmPath set $serviceName Start $nssmStart | Out-Null
 & $NssmPath set $serviceName AppExit Default Restart | Out-Null
 & $NssmPath set $serviceName AppRestartDelay 5000 | Out-Null
 & $NssmPath set $serviceName AppStopMethodConsole 5000 | Out-Null
@@ -133,5 +139,6 @@ if (-not $existing) {
 
 & $NssmPath start $serviceName | Out-Null
 Get-Service -Name $serviceName | Format-Table Status, Name, DisplayName
+Write-Host "Start type: $StartType ($nssmStart)"
 Write-Host "Configuration: $configPath"
 Write-Host "Logs: $(Join-Path $DataPath 'logs')"

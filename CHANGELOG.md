@@ -4,6 +4,10 @@ All notable changes are recorded here in reverse chronological order. Dates use 
 
 ## Unreleased — Abandoned handover recovery
 
+### Added
+
+- `Install-Service.ps1 -StartType Automatic|Delayed` chooses when Windows starts the service. `Automatic` starts it with the other automatic services, so the panel is normally live by the time the logon screen appears; `Delayed` (the default, and the only behaviour before) starts it about two minutes later. `Update-Service.ps1` keeps whatever start type is installed. Tested under Windows PowerShell 5.1 against an installed service driving a physical CFA835: omitting `-StartType` gave `DelayedAutoStart = True`, `-StartType Automatic` gave `False`, the monitor reconnected on COM4 after each reinstall, and an invalid value was refused before anything changed. A cold boot with `Automatic` has not been timed yet.
+
 ### Fixed
 
 - A running monitor no longer gets stuck when a new process asks to take over and then vanishes before reading the answer (killed, interrupted with Ctrl+C, or its window closed). Before, the owner kept running but ignored every keypad press, refused every live configuration reload, and had stopped its handover pipe, until it was restarted. Now it waits until that requester process has exited and then resumes keypad input and reload on its own. A configuration edit deferred in the meantime is applied then.

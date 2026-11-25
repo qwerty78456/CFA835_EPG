@@ -207,6 +207,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\Install-Service.ps1
 ```
 
+The service uses Windows' delayed automatic start by default. Add `-StartType Automatic` to have the panel live by the time the logon screen appears (DEPLOYMENT.md section 8).
+
 Persistent configuration is stored at `C:\ProgramData\Cfa835SystemMonitor\appsettings.json`; service logs are stored under `C:\ProgramData\Cfa835SystemMonitor\logs`.
 
 ## Development
