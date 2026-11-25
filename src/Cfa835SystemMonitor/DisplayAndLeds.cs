@@ -53,11 +53,21 @@ public static class ScreenFormatter
 /// </summary>
 public sealed record PageDescriptor(string Id, bool IsShutdown);
 
-public sealed class PageController(
-    DisplayOptions options,
-    ShutdownOptions shutdownOptions,
-    IShutdownExecutor shutdownExecutor,
-    IReadOnlyList<PageDescriptor>? pages = null)
+/// <summary>
+/// One consistent read of the controller's state, taken under its lock. Building a frame from
+/// several separate property reads could mix states when a key arrives on the serial thread in
+/// between (e.g. a Confirm frame with the previous page's YES/NO selection).
+/// </summary>
+public readonly record struct PageView(
+    string PageId,
+    PageCategory Category,
+    bool AutoCycle,
+    ShutdownUiState ShutdownState,
+    bool ConfirmYesSelected,
+    int PendingSeconds,
+    int RemainingSeconds);
+
+public sealed class PageController
 {
     private enum PendingShutdownAction
     {
@@ -66,45 +76,208 @@ public sealed class PageController(
         Abort
     }
 
-    private readonly IReadOnlyList<PageDescriptor> _pages = pages is { Count: > 0 }
-        ? pages
-        : Enum.GetValues<PageCategory>()
-            .Select(category => new PageDescriptor(category.ToString(), category == PageCategory.Shutdown))
-            .ToArray();
-
+    private readonly IShutdownExecutor _shutdownExecutor;
     private readonly object _sync = new();
+
+    // Replaced only by TryReconfigure, under _sync. Every reader takes _sync too: the serial reader
+    // thread reads the current page while handling keys, and an unlocked read racing a swap to a
+    // shorter page list would index out of range, fault the receive loop and drop the COM port.
+    private IReadOnlyList<PageDescriptor> _pages;
+    private DisplayOptions _options;
+    private ShutdownOptions _shutdownOptions;
+
     private int _pageIndex;
     private DateTimeOffset _nextAuto = DateTimeOffset.MinValue;
     private DateTimeOffset _lastKeyAt = DateTimeOffset.MinValue;
     private ShutdownUiState _shutdownState = ShutdownUiState.Idle;
     private bool _confirmYes;
-    private int _pendingSeconds = shutdownOptions.CountdownSeconds;
+    private int _pendingSeconds;
     private DateTimeOffset _shutdownDeadline;
     private bool _replacementPending;
+    private bool _autoCycle;
 
-    public bool AutoCycle { get; private set; } = options.AutoCycleOnStart;
+    public PageController(
+        DisplayOptions options,
+        ShutdownOptions shutdownOptions,
+        IShutdownExecutor shutdownExecutor,
+        IReadOnlyList<PageDescriptor>? pages = null)
+    {
+        _options = options;
+        _shutdownOptions = shutdownOptions;
+        _shutdownExecutor = shutdownExecutor;
+        _pages = ResolvePages(pages);
+        _pendingSeconds = shutdownOptions.CountdownSeconds;
+        _autoCycle = options.AutoCycleOnStart;
+    }
+
+    public bool AutoCycle
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _autoCycle;
+            }
+        }
+    }
 
     /// <summary>
     /// The built-in category of the current page. Layout-defined pages that do not correspond to a
     /// built-in category report <see cref="PageCategory.DateTime"/>; graphic mode uses
     /// <see cref="CurrentPageId"/> instead.
     /// </summary>
-    public PageCategory Category => Enum.TryParse(_pages[_pageIndex].Id, ignoreCase: true, out PageCategory parsed)
-        ? parsed
-        : PageCategory.DateTime;
+    public PageCategory Category
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return CurrentCategory();
+            }
+        }
+    }
 
-    public string CurrentPageId => _pages[_pageIndex].Id;
-    public int CurrentPageIndex => _pageIndex;
-    public ShutdownUiState ShutdownState => _shutdownState;
-    public bool ConfirmYesSelected => _confirmYes;
-    public int PendingSeconds => _pendingSeconds;
+    public string CurrentPageId
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _pages[_pageIndex].Id;
+            }
+        }
+    }
+
+    public int CurrentPageIndex
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _pageIndex;
+            }
+        }
+    }
+
+    public ShutdownUiState ShutdownState
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _shutdownState;
+            }
+        }
+    }
+
+    public bool ConfirmYesSelected
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _confirmYes;
+            }
+        }
+    }
+
+    public int PendingSeconds
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _pendingSeconds;
+            }
+        }
+    }
+
+    /// <summary>The page ring currently in use (layout pages, or the built-in text ring).</summary>
+    public IReadOnlyList<PageDescriptor> Pages
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _pages;
+            }
+        }
+    }
 
     /// <summary>Seconds left on an armed countdown, for layout fields bound to shutdown.remaining.</summary>
     public int RemainingSeconds(DateTimeOffset now)
     {
         lock (_sync)
         {
-            return Math.Max(0, (int)Math.Ceiling((_shutdownDeadline - now).TotalSeconds));
+            return Remaining(now);
+        }
+    }
+
+    /// <summary>Everything a frame needs, read atomically.</summary>
+    public PageView View(DateTimeOffset now)
+    {
+        lock (_sync)
+        {
+            return new PageView(
+                _pages[_pageIndex].Id,
+                CurrentCategory(),
+                _autoCycle,
+                _shutdownState,
+                _confirmYes,
+                _pendingSeconds,
+                Remaining(now));
+        }
+    }
+
+    /// <summary>
+    /// Applies reloaded display/shutdown settings and page ring in place, keeping the controller
+    /// instance (and therefore the key handler and handover hook that reference it) intact.
+    /// </summary>
+    /// <returns>
+    /// False, changing nothing, while the shutdown confirmation or countdown is on screen or a
+    /// process handover is in progress: an armed Windows shutdown can only be shown and aborted
+    /// through this controller, so its modal state is never disturbed. The caller retries later.
+    /// </returns>
+    public bool TryReconfigure(
+        DisplayOptions options,
+        ShutdownOptions shutdownOptions,
+        IReadOnlyList<PageDescriptor>? pages)
+    {
+        lock (_sync)
+        {
+            if (_shutdownState != ShutdownUiState.Idle || _replacementPending)
+            {
+                return false;
+            }
+
+            IReadOnlyList<PageDescriptor> resolved = ResolvePages(pages);
+            string currentId = _pages[_pageIndex].Id;
+            int index = -1;
+            for (int candidate = 0; candidate < resolved.Count; candidate++)
+            {
+                if (string.Equals(resolved[candidate].Id, currentId, StringComparison.OrdinalIgnoreCase))
+                {
+                    index = candidate;
+                    break;
+                }
+            }
+
+            if (_options.AutoCycleSeconds != options.AutoCycleSeconds)
+            {
+                // Re-seeded by the next Tick, so the new interval applies from now.
+                _nextAuto = DateTimeOffset.MinValue;
+            }
+
+            _pages = resolved;
+            _pageIndex = Math.Max(0, index);
+            _options = options;
+            _shutdownOptions = shutdownOptions;
+
+            // Idle is guaranteed here, so this only changes the next confirmation's starting delay
+            // and the idle page's "Timeout" text. autoCycleOnStart is deliberately not re-applied:
+            // it is a start-up value, and the operator's live AUTO choice survives a reload.
+            _pendingSeconds = shutdownOptions.CountdownSeconds;
+            return true;
         }
     }
 
@@ -147,11 +320,11 @@ public sealed class PageController(
         // so Start/Abort cannot reorder in practice.
         if (action == PendingShutdownAction.Start)
         {
-            shutdownExecutor.RequestShutdown(seconds);
+            _shutdownExecutor.RequestShutdown(seconds);
         }
         else if (action == PendingShutdownAction.Abort)
         {
-            _ = shutdownExecutor.TryAbort();
+            _ = _shutdownExecutor.TryAbort();
         }
 
         return handled;
@@ -175,7 +348,7 @@ public sealed class PageController(
             return ReplacementPreparationResult.Ready();
         }
 
-        if (!shutdownExecutor.TryAbort())
+        if (!_shutdownExecutor.TryAbort())
         {
             lock (_sync)
             {
@@ -191,7 +364,7 @@ public sealed class PageController(
         {
             _shutdownState = ShutdownUiState.Idle;
             _pageIndex = 0;
-            AutoCycle = false;
+            _autoCycle = false;
         }
 
         return ReplacementPreparationResult.Ready(shutdownWasPending: true, shutdownCancelled: true);
@@ -210,14 +383,14 @@ public sealed class PageController(
             case CfaKey.Enter when _pages[_pageIndex].IsShutdown:
                 _shutdownState = ShutdownUiState.Confirm;
                 _confirmYes = false;
-                _pendingSeconds = shutdownOptions.CountdownSeconds;
+                _pendingSeconds = _shutdownOptions.CountdownSeconds;
                 break;
             case CfaKey.Enter:
-                AutoCycle = !AutoCycle;
-                _nextAuto = now.AddSeconds(options.AutoCycleSeconds);
+                _autoCycle = !_autoCycle;
+                _nextAuto = now.AddSeconds(_options.AutoCycleSeconds);
                 break;
             case CfaKey.Exit:
-                AutoCycle = false;
+                _autoCycle = false;
                 _pageIndex = 0;
                 break;
             default:
@@ -247,7 +420,7 @@ public sealed class PageController(
             case CfaKey.Enter when _confirmYes:
                 _shutdownDeadline = now.AddSeconds(_pendingSeconds);
                 _shutdownState = ShutdownUiState.CountingDown;
-                AutoCycle = false;
+                _autoCycle = false;
                 action = PendingShutdownAction.Start;
                 break;
             case CfaKey.Enter:
@@ -273,7 +446,7 @@ public sealed class PageController(
         action = PendingShutdownAction.Abort;
         _shutdownState = ShutdownUiState.Idle;
         _pageIndex = 0;
-        AutoCycle = false;
+        _autoCycle = false;
         return true;
     }
 
@@ -287,14 +460,14 @@ public sealed class PageController(
                 return false;
             }
 
-            if (!AutoCycle)
+            if (!_autoCycle)
             {
                 return false;
             }
 
             if (_nextAuto == DateTimeOffset.MinValue)
             {
-                _nextAuto = now.AddSeconds(options.AutoCycleSeconds);
+                _nextAuto = now.AddSeconds(_options.AutoCycleSeconds);
                 return false;
             }
 
@@ -307,7 +480,7 @@ public sealed class PageController(
             // the user parks there with auto-cycle on); manual Left/Right reaches it.
             _pageIndex = NextAutoCycle(_pageIndex);
 
-            _nextAuto = now.AddSeconds(options.AutoCycleSeconds);
+            _nextAuto = now.AddSeconds(_options.AutoCycleSeconds);
             return true;
         }
     }
@@ -320,7 +493,7 @@ public sealed class PageController(
             {
                 ShutdownUiState.Confirm => RenderShutdownConfirm(),
                 ShutdownUiState.CountingDown => RenderShutdownCountdown(snapshot.Timestamp),
-                _ => Category switch
+                _ => CurrentCategory() switch
                 {
                     PageCategory.Network => RenderNetwork(snapshot),
                     PageCategory.Shutdown => RenderShutdownIdle(),
@@ -337,11 +510,11 @@ public sealed class PageController(
         return
         [
             ScreenFormatter.Fit(
-                $"{local.ToString(options.DateFormat, CultureInfo.InvariantCulture)} " +
-                local.ToString(options.TimeFormat, CultureInfo.InvariantCulture)),
+                $"{local.ToString(_options.DateFormat, CultureInfo.InvariantCulture)} " +
+                local.ToString(_options.TimeFormat, CultureInfo.InvariantCulture)),
             ScreenFormatter.Fit($"CPU UTIL{snapshot.CpuPercent,11:0.0}%"),
             ScreenFormatter.Fit($"TEMPERATURE{ScreenFormatter.TemperatureValue(temperature),9}"),
-            ScreenFormatter.Fit($"AUTO: {(AutoCycle ? "ON" : "OFF")}")
+            ScreenFormatter.Fit($"AUTO: {(_autoCycle ? "ON" : "OFF")}")
         ];
     }
 
@@ -350,7 +523,7 @@ public sealed class PageController(
         ScreenFormatter.Fit("SHUTDOWN"),
         ScreenFormatter.Fit("Press ENTER to shut"),
         ScreenFormatter.Fit("down this device"),
-        ScreenFormatter.Fit($"Timeout: {shutdownOptions.CountdownSeconds}s")
+        ScreenFormatter.Fit($"Timeout: {_shutdownOptions.CountdownSeconds}s")
     ];
 
     private string[] RenderShutdownConfirm() =>
@@ -380,6 +553,23 @@ public sealed class PageController(
         ScreenFormatter.Fit($"Tx{ScreenFormatter.Rate(snapshot.TransmitMbps),18}"),
         ScreenFormatter.Fit($"Total{ScreenFormatter.Rate(snapshot.ReceiveMbps + snapshot.TransmitMbps),15}")
     ];
+
+    private static IReadOnlyList<PageDescriptor> ResolvePages(IReadOnlyList<PageDescriptor>? pages) =>
+        pages is { Count: > 0 }
+            ? pages
+            : Enum.GetValues<PageCategory>()
+                .Select(category => new PageDescriptor(category.ToString(), category == PageCategory.Shutdown))
+                .ToArray();
+
+    // Callers hold _sync.
+    private PageCategory CurrentCategory() =>
+        Enum.TryParse(_pages[_pageIndex].Id, ignoreCase: true, out PageCategory parsed)
+            ? parsed
+            : PageCategory.DateTime;
+
+    // Callers hold _sync.
+    private int Remaining(DateTimeOffset now) =>
+        Math.Max(0, (int)Math.Ceiling((_shutdownDeadline - now).TotalSeconds));
 
     private int Next(int index) => (index + 1) % _pages.Count;
 
@@ -434,12 +624,19 @@ public readonly record struct LedColor(byte Green, byte Red)
 
 public sealed class LedStateMachine(ThermalOptions options)
 {
+    private ThermalOptions _options = options;
     private bool _thermalWarning;
+
+    /// <summary>
+    /// Applies reloaded thresholds. The warning latch is kept, so a reload never flickers an active
+    /// thermal warning; the new entry/clear points take effect on the next evaluation.
+    /// </summary>
+    public void Reconfigure(ThermalOptions thermal) => _options = thermal;
 
     public IReadOnlyList<LedColor> Evaluate(MetricSnapshot snapshot)
     {
-        double entry = options.TjMaxC - options.WarningMarginC;
-        double clear = entry - options.ClearHysteresisC;
+        double entry = _options.TjMaxC - _options.WarningMarginC;
+        double clear = entry - _options.ClearHysteresisC;
         if (!snapshot.HottestCpuC.HasValue)
         {
             _thermalWarning = false;

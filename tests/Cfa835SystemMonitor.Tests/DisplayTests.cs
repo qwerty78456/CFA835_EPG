@@ -402,6 +402,189 @@ public sealed class DisplayTests
         Assert.Equal(0, pages.RemainingSeconds(now.AddSeconds(90)));
     }
 
+    private static readonly PageDescriptor[] MainGpuBye =
+        [new("Main", false), new("Gpu", false), new("Bye", true)];
+
+    [Fact]
+    public void ReconfigureKeepsTheCurrentPageWhenItsIdSurvives()
+    {
+        PageController pages = new(_display, new ShutdownOptions(), new FakeShutdownExecutor(), MainGpuBye);
+        pages.HandleKey(CfaKey.Right, DateTimeOffset.Parse("2026-08-25T12:00:00Z"));
+        Assert.Equal("Gpu", pages.CurrentPageId);
+
+        // Reordered and extended: the operator stays on the page they were looking at.
+        Assert.True(pages.TryReconfigure(
+            _display,
+            new ShutdownOptions(),
+            [new PageDescriptor("Intro", false), new PageDescriptor("Main", false), new PageDescriptor("Gpu", false)]));
+
+        Assert.Equal("Gpu", pages.CurrentPageId);
+        Assert.Equal(2, pages.CurrentPageIndex);
+    }
+
+    [Fact]
+    public void ReconfigureMatchesPageIdsIgnoringCase()
+    {
+        PageController pages = new(_display, new ShutdownOptions(), new FakeShutdownExecutor(), MainGpuBye);
+        pages.HandleKey(CfaKey.Right, DateTimeOffset.Parse("2026-08-25T12:00:00Z"));
+
+        Assert.True(pages.TryReconfigure(
+            _display, new ShutdownOptions(), [new PageDescriptor("MAIN", false), new PageDescriptor("gpu", false)]));
+
+        Assert.Equal("gpu", pages.CurrentPageId);
+    }
+
+    [Fact]
+    public void ReconfigureFallsBackToTheFirstPageWhenTheCurrentPageWasRemoved()
+    {
+        PageController pages = new(_display, new ShutdownOptions(), new FakeShutdownExecutor(), MainGpuBye);
+        pages.HandleKey(CfaKey.Right, DateTimeOffset.Parse("2026-08-25T12:00:00Z"));
+
+        Assert.True(pages.TryReconfigure(
+            _display, new ShutdownOptions(), [new PageDescriptor("Main", false), new PageDescriptor("Bye", true)]));
+
+        Assert.Equal("Main", pages.CurrentPageId);
+    }
+
+    [Fact]
+    public void ReconfigureToAShorterRingNeverLeavesTheIndexOutOfRange()
+    {
+        PageController pages = new(_display, new ShutdownOptions(), new FakeShutdownExecutor(), MainGpuBye);
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-25T12:00:00Z");
+        pages.HandleKey(CfaKey.Left, now);
+        Assert.Equal(2, pages.CurrentPageIndex);
+
+        Assert.True(pages.TryReconfigure(_display, new ShutdownOptions(), [new PageDescriptor("Solo", false)]));
+
+        Assert.Equal(0, pages.CurrentPageIndex);
+        Assert.Equal("Solo", pages.View(now).PageId);
+        Assert.True(pages.HandleKey(CfaKey.Right, now.AddMilliseconds(200)));
+        Assert.Equal("Solo", pages.CurrentPageId);
+    }
+
+    [Fact]
+    public void ReconfigurePreservesAutoCycleState()
+    {
+        // autoCycleOnStart is a start-up value; the operator's live AUTO choice survives a reload.
+        PageController pages = new(_display, new ShutdownOptions(), new FakeShutdownExecutor(), MainGpuBye);
+        pages.HandleKey(CfaKey.Enter, DateTimeOffset.Parse("2026-08-25T12:00:00Z"));
+        Assert.True(pages.AutoCycle);
+
+        Assert.True(pages.TryReconfigure(_display with { AutoCycleOnStart = false }, new ShutdownOptions(), MainGpuBye));
+
+        Assert.True(pages.AutoCycle);
+    }
+
+    [Fact]
+    public void ReconfigureAppliesTheNewAutoCycleInterval()
+    {
+        PageController pages = new(_display, new ShutdownOptions(), new FakeShutdownExecutor(), MainGpuBye);
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-25T12:00:00Z");
+        pages.HandleKey(CfaKey.Enter, now);
+
+        Assert.True(pages.TryReconfigure(_display with { AutoCycleSeconds = 30 }, new ShutdownOptions(), MainGpuBye));
+
+        // The first tick after the reload re-seeds the deadline from the new 30 s interval.
+        Assert.False(pages.Tick(now = now.AddSeconds(1)));
+        Assert.False(pages.Tick(now.AddSeconds(29)));
+        Assert.True(pages.Tick(now.AddSeconds(30)));
+        Assert.Equal("Gpu", pages.CurrentPageId);
+    }
+
+    [Fact]
+    public void ReconfigureAppliesTheNewCountdownDefault()
+    {
+        PageController pages = Controller(_display, new FakeShutdownExecutor(), countdownSeconds: 30);
+
+        Assert.True(pages.TryReconfigure(_display, new ShutdownOptions { CountdownSeconds = 45 }, null));
+
+        Assert.Equal(45, pages.PendingSeconds);
+        DateTimeOffset now = NavigateToShutdown(pages);
+        Assert.Contains("Timeout: 45s", pages.Render(Snapshot(), new ThermalOptions())[3]);
+        pages.HandleKey(CfaKey.Enter, now.AddMilliseconds(200));
+        Assert.Equal(45, pages.PendingSeconds);
+    }
+
+    [Fact]
+    public void ReconfigureIsRefusedWhileTheConfirmDialogIsOpen()
+    {
+        PageController pages = Controller(_display, new FakeShutdownExecutor());
+        DateTimeOffset now = NavigateToShutdown(pages);
+        pages.HandleKey(CfaKey.Enter, now = now.AddMilliseconds(200));
+        pages.HandleKey(CfaKey.Up, now.AddMilliseconds(200));
+        Assert.Equal(ShutdownUiState.Confirm, pages.ShutdownState);
+
+        Assert.False(pages.TryReconfigure(
+            _display, new ShutdownOptions { CountdownSeconds = 10 }, [new PageDescriptor("Other", false)]));
+
+        Assert.Equal(ShutdownUiState.Confirm, pages.ShutdownState);
+        Assert.Equal("Shutdown", pages.CurrentPageId);
+        Assert.Equal(35, pages.PendingSeconds);
+    }
+
+    [Fact]
+    public void ReconfigureIsRefusedDuringACountdownAndLeavesTheArmedShutdownAlone()
+    {
+        FakeShutdownExecutor executor = new();
+        PageController pages = Controller(_display, executor);
+        DateTimeOffset confirmedAt = StartCountdown(pages);
+
+        Assert.False(pages.TryReconfigure(
+            _display, new ShutdownOptions { CountdownSeconds = 10 }, [new PageDescriptor("Other", false)]));
+
+        Assert.Equal(ShutdownUiState.CountingDown, pages.ShutdownState);
+        Assert.Equal("Shutdown", pages.CurrentPageId);
+        Assert.Equal(27, pages.RemainingSeconds(confirmedAt.AddSeconds(3)));
+        Assert.Equal(0, executor.AbortCount);
+
+        // Exit still routes to the abort, and only then does a reload go through.
+        pages.HandleKey(CfaKey.Exit, confirmedAt.AddMilliseconds(200));
+        Assert.Equal(1, executor.AbortCount);
+        Assert.True(pages.TryReconfigure(_display, new ShutdownOptions(), [new PageDescriptor("Other", false)]));
+    }
+
+    [Fact]
+    public void ReconfigureIsRefusedOnceReplacementIsPending()
+    {
+        PageController pages = Controller(_display, new FakeShutdownExecutor());
+        Assert.True(pages.PrepareForReplacement().Accepted);
+
+        Assert.False(pages.TryReconfigure(_display, new ShutdownOptions(), [new PageDescriptor("Other", false)]));
+
+        Assert.Equal("DateTime", pages.CurrentPageId);
+    }
+
+    [Fact]
+    public void ReconfigureWithoutPagesRestoresTheBuiltInRing()
+    {
+        // Switching graphic -> text hands the controller no layout pages.
+        PageController pages = new(_display, new ShutdownOptions(), new FakeShutdownExecutor(),
+            [new PageDescriptor("Network", false), new PageDescriptor("Art", false)]);
+
+        Assert.True(pages.TryReconfigure(_display, new ShutdownOptions(), null));
+
+        Assert.Equal(["DateTime", "Network", "Shutdown"], pages.Pages.Select(page => page.Id));
+        Assert.Equal(PageCategory.Network, pages.Category);
+    }
+
+    [Fact]
+    public void ViewReturnsOneConsistentSnapshot()
+    {
+        PageController pages = Controller(_display, new FakeShutdownExecutor(), countdownSeconds: 20);
+        DateTimeOffset now = NavigateToShutdown(pages);
+        pages.HandleKey(CfaKey.Enter, now = now.AddMilliseconds(200));
+        pages.HandleKey(CfaKey.Left, now = now.AddMilliseconds(200));
+
+        PageView view = pages.View(now);
+
+        Assert.Equal("Shutdown", view.PageId);
+        Assert.Equal(PageCategory.Shutdown, view.Category);
+        Assert.Equal(ShutdownUiState.Confirm, view.ShutdownState);
+        Assert.True(view.ConfirmYesSelected);
+        Assert.Equal(20, view.PendingSeconds);
+        Assert.False(view.AutoCycle);
+    }
+
     private static PageController Controller(
         DisplayOptions display, FakeShutdownExecutor executor, int countdownSeconds = 30) =>
         new(display, new ShutdownOptions { CountdownSeconds = countdownSeconds }, executor);
@@ -428,19 +611,6 @@ public sealed class DisplayTests
         pages.HandleKey(CfaKey.Enter, now = now.AddMilliseconds(200));
         Assert.Equal(ShutdownUiState.CountingDown, pages.ShutdownState);
         return now;
-    }
-
-    private sealed class FakeShutdownExecutor : IShutdownExecutor
-    {
-        public List<int> Requested { get; } = [];
-        public int AbortCount { get; private set; }
-        public bool AbortSucceeds { get; init; } = true;
-        public void RequestShutdown(int seconds) => Requested.Add(seconds);
-        public bool TryAbort()
-        {
-            AbortCount++;
-            return AbortSucceeds;
-        }
     }
 
     private static MetricSnapshot Snapshot() => new(

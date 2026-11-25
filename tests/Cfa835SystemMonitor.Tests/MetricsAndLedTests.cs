@@ -195,6 +195,25 @@ public sealed class MetricsAndLedTests
         Assert.Equal(LedColor.RedOnly, machine.Evaluate(Snapshot(DateTimeOffset.FromUnixTimeMilliseconds(500), 92))[3]);
     }
 
+    [Fact]
+    public void ReconfigureKeepsTheThermalLatchAndUsesTheNewThresholds()
+    {
+        LedStateMachine machine = new(new ThermalOptions { TjMaxC = 100, WarningMarginC = 10, ClearHysteresisC = 2 });
+        DateTimeOffset onPhase = DateTimeOffset.FromUnixTimeMilliseconds(0);
+        _ = machine.Evaluate(Snapshot(onPhase, 91));
+        Assert.True(machine.ThermalWarning);
+
+        // A reload that raises the limits must not drop an active warning by itself...
+        machine.Reconfigure(new ThermalOptions { TjMaxC = 105, WarningMarginC = 10, ClearHysteresisC = 2 });
+        Assert.True(machine.ThermalWarning);
+
+        // ...but the next evaluation clears against the new point (95 - 2 = 93), not the old 88.
+        _ = machine.Evaluate(Snapshot(onPhase, 92.9));
+        Assert.False(machine.ThermalWarning);
+        Assert.False(machine.Evaluate(Snapshot(onPhase, 94))[3] == LedColor.RedOnly);
+        Assert.Equal(LedColor.RedOnly, machine.Evaluate(Snapshot(onPhase, 95))[3]);
+    }
+
     private static MetricSnapshot Snapshot(DateTimeOffset timestamp, double temperature) =>
         new(timestamp, 0, [], temperature, 0, 0, false, false, false);
 
