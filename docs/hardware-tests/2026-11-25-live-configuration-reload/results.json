@@ -1,0 +1,165 @@
+[
+  {
+    "Id": "H0a",
+    "Check": "New build takes the CFA835 over from the running monitor",
+    "Result": "PASS",
+    "Evidence": "PID 5968; Connected to CFA835:h1.0,f0.6 on COM4"
+  },
+  {
+    "Id": "H0b",
+    "Check": "Reload is on by default for a config without a reload group (upgrade path)",
+    "Result": "PASS",
+    "Evidence": "Live configuration reload is on: watching D:\\CFA835\\hardware-test\\config\\appsettings.json, D:\\CFA835\\hardware-test\\config\\layout.json, D:\\CFA835\\hardware-test\\config\\background.png every 1000 ms"
+  },
+  {
+    "Id": "H0c",
+    "Check": "Previous owner handed over and exited",
+    "Result": "PASS",
+    "Evidence": "previous PID(s) 1700 still running: "
+  },
+  {
+    "Id": "H0d",
+    "Check": "New monitor holds COM4",
+    "Result": "PASS",
+    "Evidence": "PID 5968 handle scan"
+  },
+  {
+    "Id": "H1",
+    "Check": "Moving a field applies live",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'"
+  },
+  {
+    "Id": "H2a",
+    "Check": "Broken layout.json is rejected with one warning naming the file",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: Configuration change rejected; the display keeps the running configuration. D:\\CFA835\\hardware-test\\config\\layout.json: Expected depth to be zero at the end of the JSON payload. There is an open JSON object or array that should be closed. Path: $ | LineNumber: 70 | BytePositionInLine: 0."
+  },
+  {
+    "Id": "H2b",
+    "Check": "The rejection is logged once, not on every poll",
+    "Result": "PASS",
+    "Evidence": "1 warning line(s) in ~5 s"
+  },
+  {
+    "Id": "H2c",
+    "Check": "Restoring the file applies the edit",
+    "Result": "PASS",
+    "Evidence": "after 2.4s: Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'"
+  },
+  {
+    "Id": "H3a",
+    "Check": "A 100x50 background is rejected naming the PNG",
+    "Result": "PASS",
+    "Evidence": "after 1.8s: Configuration change rejected; the display keeps the running configuration. D:\\CFA835\\hardware-test\\config\\layout.json: Background 'D:\\CFA835\\hardware-test\\config\\bad.png' is 100x50; the CFA835 needs exactly 244x68."
+  },
+  {
+    "Id": "H3b",
+    "Check": "Replacing the PNG alone (layout untouched) applies it",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'"
+  },
+  {
+    "Id": "H4a",
+    "Check": "A background that does not exist yet is rejected",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: Configuration change rejected; the display keeps the running configuration. D:\\CFA835\\hardware-test\\config\\layout.json: layout page 'DateTime': background 'D:\\CFA835\\hardware-test\\config\\late.png' was not found."
+  },
+  {
+    "Id": "H4b",
+    "Check": "Copying the PNG in is picked up without another save",
+    "Result": "PASS",
+    "Evidence": "after 15.9s: Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'"
+  },
+  {
+    "Id": "H5a",
+    "Check": "Adding a page grows the ring",
+    "Result": "PASS",
+    "Evidence": "after 1.9s: Configuration reloaded (Layout): graphic mode, 4 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'"
+  },
+  {
+    "Id": "H5b",
+    "Check": "Removing the page on screen falls back to the first page",
+    "Result": "PASS",
+    "Evidence": "after 2.3s: Configuration reloaded (Layout): graphic mode, 2 page(s), font 'Bahnschrift SemiLight', current page 'Network'"
+  },
+  {
+    "Id": "H6",
+    "Check": "Toggling gammaCorrection applies live",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'"
+  },
+  {
+    "Id": "H7",
+    "Check": "autoCycleSeconds and countdownSeconds apply live",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: Configuration reloaded (Layout, Shutdown, Display): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'"
+  },
+  {
+    "Id": "H9",
+    "Check": "device.fallbackPort change is deferred to the next reconnect",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: device.* settings changed; they apply at the next reconnect and the open port is kept"
+  },
+  {
+    "Id": "H10a",
+    "Check": "Switching display.mode to text applies live",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: Configuration reloaded (DisplayMode, Device, Display): text mode"
+  },
+  {
+    "Id": "H10b",
+    "Check": "Switching back to graphic applies live",
+    "Result": "PASS",
+    "Evidence": "after 2.4s: Configuration reloaded (DisplayMode, Layout, Display): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'"
+  },
+  {
+    "Id": "H11a",
+    "Check": "An out-of-range setting is rejected naming appsettings.json",
+    "Result": "PASS",
+    "Evidence": "after 6.5s: Configuration change rejected; the display keeps the running configuration. D:\\CFA835\\hardware-test\\config\\appsettings.json: sampling.activityMs must be between 50 and 5000."
+  },
+  {
+    "Id": "H11b",
+    "Check": "Restoring it applies",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'"
+  },
+  {
+    "Id": "H12a",
+    "Check": "reload.enabled = false is applied and announced",
+    "Result": "PASS",
+    "Evidence": "after 2.1s: Live configuration reload is now disabled (reload.enabled = false); restart the monitor to apply further edits"
+  },
+  {
+    "Id": "H12b",
+    "Check": "Further edits are ignored once reload is off",
+    "Result": "PASS",
+    "Evidence": "0 reload line(s) in 6 s after an edit"
+  },
+  {
+    "Id": "INV1",
+    "Check": "Same process throughout (no restart)",
+    "Result": "PASS",
+    "Evidence": "PID 5968 alive: True"
+  },
+  {
+    "Id": "INV2",
+    "Check": "COM port never dropped (exactly one connect, no connection failures)",
+    "Result": "PASS",
+    "Evidence": "1 connect line(s), 0 failure line(s)"
+  },
+  {
+    "Id": "INV3",
+    "Check": "COM4 still held at the end",
+    "Result": "PASS",
+    "Evidence": "PID 5968 handle scan"
+  },
+  {
+    "Id": "INV4",
+    "Check": "Nothing written to stderr",
+    "Result": "PASS",
+    "Evidence": "empty"
+  }
+]
+

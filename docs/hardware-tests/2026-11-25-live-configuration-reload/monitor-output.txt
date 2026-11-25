@@ -1,0 +1,35 @@
+2026-11-25 16:33:26.594 +07:00 info: Cfa835SystemMonitor.InstanceCoordinator[0] Running Monitor process 1700 accepted CFA835 handover
+2026-11-25 16:33:27.186 +07:00 info: Cfa835SystemMonitor.TemperatureMonitor[0] Windows ACPI thermal-zone fallback initialized with 2 counter(s)
+2026-11-25 16:33:27.189 +07:00 info: Cfa835SystemMonitor.GraphicRuntime[0] Loaded layout 'D:\CFA835\hardware-test\config\layout.json': 3 page(s), refresh 250 ms, full repaint every 60s
+2026-11-25 16:33:27.240 +07:00 info: Cfa835SystemMonitor.GraphicRuntime[0] Glyph atlas ready: font 'Bahnschrift SemiLight', sizes 12, 16, 20, 24, 26
+2026-11-25 16:33:27.304 +07:00 info: Cfa835SystemMonitor.GraphicRuntime[0] Page 'DateTime' background: D:\CFA835\hardware-test\config\background.png
+2026-11-25 16:33:27.330 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Live configuration reload is on: watching D:\CFA835\hardware-test\config\appsettings.json, D:\CFA835\hardware-test\config\layout.json, D:\CFA835\hardware-test\config\background.png every 1000 ms
+2026-11-25 16:33:27.374 +07:00 info: Cfa835SystemMonitor.SerialCfaTransport[0] Opened CFA835 transport on COM4
+2026-11-25 16:33:27.389 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Found CFA835:h1.0,f0.6 on COM4 via USB VID_223B&PID_0005, serial <redacted>
+2026-11-25 16:33:27.394 +07:00 info: Cfa835SystemMonitor.SerialCfaTransport[0] Opened CFA835 transport on COM4
+2026-11-25 16:33:27.416 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Connected to CFA835:h1.0,f0.6 on COM4
+2026-11-25 16:33:32.255 +07:00 info: Cfa835SystemMonitor.TemperatureMonitor[0] LibreHardwareMonitor hardware inventory opened; PawnIO installed: True
+2026-11-25 16:33:36.078 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'
+2026-11-25 16:33:38.292 +07:00 warn: Cfa835SystemMonitor.ConfigReloader[0] Configuration change rejected; the display keeps the running configuration. D:\CFA835\hardware-test\config\layout.json: Expected depth to be zero at the end of the JSON payload. There is an open JSON object or array that should be closed. Path: $ | LineNumber: 70 | BytePositionInLine: 0.
+2026-11-25 16:33:44.602 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'
+2026-11-25 16:33:46.546 +07:00 warn: Cfa835SystemMonitor.ConfigReloader[0] Configuration change rejected; the display keeps the running configuration. D:\CFA835\hardware-test\config\layout.json: Background 'D:\CFA835\hardware-test\config\bad.png' is 100x50; the CFA835 needs exactly 244x68.
+2026-11-25 16:33:48.681 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'
+2026-11-25 16:33:50.766 +07:00 warn: Cfa835SystemMonitor.ConfigReloader[0] Configuration change rejected; the display keeps the running configuration. D:\CFA835\hardware-test\config\layout.json: layout page 'DateTime': background 'D:\CFA835\hardware-test\config\late.png' was not found.
+2026-11-25 16:34:06.604 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'
+2026-11-25 16:34:08.702 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 4 page(s), font 'Bahnschrift SemiLight', current page 'DateTime'
+2026-11-25 16:34:10.896 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 2 page(s), font 'Bahnschrift SemiLight', current page 'Network'
+2026-11-25 16:34:13.045 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'
+2026-11-25 16:34:15.172 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'
+2026-11-25 16:34:17.214 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout, Shutdown, Display): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'
+2026-11-25 16:34:19.362 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout, Device, Shutdown, Display): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'
+2026-11-25 16:34:19.362 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] device.* settings changed; they apply at the next reconnect and the open port is kept
+2026-11-25 16:34:21.515 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (DisplayMode, Device, Display): text mode
+2026-11-25 16:34:21.515 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] device.* settings changed; they apply at the next reconnect and the open port is kept
+2026-11-25 16:34:26.828 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (DisplayMode, Layout, Display): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'
+2026-11-25 16:34:32.865 +07:00 info: Cfa835SystemMonitor.TemperatureMonitor[0] LibreHardwareMonitor hardware inventory opened; PawnIO installed: True
+2026-11-25 16:34:33.369 +07:00 warn: Cfa835SystemMonitor.ConfigReloader[0] Configuration change rejected; the display keeps the running configuration. D:\CFA835\hardware-test\config\appsettings.json: sampling.activityMs must be between 50 and 5000.
+2026-11-25 16:34:35.458 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'
+2026-11-25 16:34:37.604 +07:00 info: Cfa835SystemMonitor.ConfigReloader[0] Live configuration reload is now disabled (reload.enabled = false); restart the monitor to apply further edits
+2026-11-25 16:34:37.604 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] Configuration reloaded (Layout, Reload): graphic mode, 3 page(s), font 'Bahnschrift SemiLight', current page 'Network'
+2026-11-25 16:35:03.260 +07:00 info: Cfa835SystemMonitor.InstanceCoordinator[0] Accepted CFA835 handover request from Monitor process 2896
+2026-11-25 16:35:03.297 +07:00 info: Cfa835SystemMonitor.MonitorApplication[0] CFA835 monitor stopped

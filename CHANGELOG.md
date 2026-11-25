@@ -18,6 +18,9 @@ All notable changes are recorded here in reverse chronological order. Dates use 
 - In graphic mode every page is test-rendered in every shutdown sub-state before it is used, at start-up and on reload. A layout that validates but cannot render (a glyph size missing from the atlas, a format that throws) used to drop and re-open the COM port on every frame; it is now rejected up front. A background PNG that is not a valid image is reported naming the page and the file instead of `Parameter is not valid`.
 - The reconnect back-off checks for configuration changes every 250 ms and retries at once after one is applied, so a corrected `device.fallbackPort` takes effect without waiting out a 30 s back-off.
 - Frames are built from one consistent, locked snapshot of the page state.
+- The reconnect back-off and the reload scheduler use a monotonic clock, so a wall-clock correction (for example a boot-time NTP step) can no longer stall reconnection or reload for the size of the step.
+- Files reached through a symbolic link are stamped through the link to their target, so edits made via a linked configuration or PNG are detected.
+- `"fallback": null` in a layout field now means a blank fallback. It used to reach the renderer as null and throw inside the render loop on every unreadable sample.
 
 ### Safety
 
@@ -29,7 +32,9 @@ All notable changes are recorded here in reverse chronological order. Dates use 
 
 ### Validation
 
-- 200 automated tests (56 new): configuration loading, in-place controller reconfiguration, graphic wire sequences, snapshot building against real files, the reload state machine with injected stamps and background work (no sleeps), and every display transition. The local development machine has no CFA835; live reload on the physical panel is an explicit acceptance step (DEPLOYMENT.md section 10.2).
+- 205 automated tests (61 new): configuration loading, in-place controller reconfiguration, graphic wire sequences, snapshot building against real files, the reload state machine with injected stamps and background work (no sleeps), every display transition, and regression tests for the defects an adversarial review of this change found (a deferred edit that could be permanently missed, a rebuild loop after a rejected edit, a repeated error not re-logged).
+- Hardware test on a physical CFA835 (`CFA835:h1.0,f0.6`, COM4): 26 of 26 automated checks passed, covering handover in and out, every reload and rejection path, a live text/graphic mode switch, and a single uninterrupted COM connection throughout. Visual and keypad-only steps were not covered. Full record: `docs/hardware-tests/2026-11-25-live-configuration-reload/`.
+- The test build was compiled with SDK 11.0.100 (rolled forward in a scratch copy) because the builder's pinned SDK 10.0.302 had been removed by a Visual Studio update; an official `Build-Release.ps1` release still requires SDK 10.0.302.
 
 ## 2026-09-04 — Elevated single-owner runtime
 

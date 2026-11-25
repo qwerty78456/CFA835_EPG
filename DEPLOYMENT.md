@@ -185,7 +185,7 @@ What the log shows:
 
 A configuration file that is deleted while the monitor runs is a rejected edit, not a revert to defaults. Setting `reload.enabled` to `false` takes effect immediately and stops further reloads until the process restarts. Changing the configuration file's own location requires a restart.
 
-A replacement file that has exactly the same length and last write time as the one it replaces is not detected; touch it or make any edit to trigger a reload.
+A replacement file that has exactly the same length and last write time as the one it replaces is not detected; touch it or make any edit to trigger a reload. On file systems with coarse timestamps (FAT32 keeps 2-second write times, some network shares are similar), two same-length saves within that resolution look identical, so keep the live configuration on NTFS. Files reached through a symbolic link are checked at their target.
 
 ## 5. CFA835 ownership and process replacement
 
@@ -335,8 +335,10 @@ For foreground mode, stop the exact new PID and launch the exact older executabl
 
 ## 10. Physical CFA835 acceptance test
 
-The local development machine has no CFA835. Unit and integration tests therefore use fake
-transports and do not open a real COM port. Perform this authoritative hardware check remotely on
+Unit and integration tests use fake transports and never open a real COM port, so the physical panel
+is always a separate acceptance step. Record each hardware run under `docs/hardware-tests/`
+(`docs/hardware-tests/2026-11-25-live-configuration-reload/` has a harness that automates the
+log-observable part of section 10.2). Perform this authoritative hardware check remotely on
 the production machine during an approved maintenance window, with the previous release ready for
 rollback.
 
