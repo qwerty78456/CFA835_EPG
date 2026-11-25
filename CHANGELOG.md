@@ -6,7 +6,11 @@ All notable changes are recorded here in reverse chronological order. Dates use 
 
 ### Added
 
-- `Install-Service.ps1 -StartType Automatic|Delayed` chooses when Windows starts the service. `Automatic` starts it with the other automatic services, so the panel is normally live by the time the logon screen appears; `Delayed` (the default, and the only behaviour before) starts it about two minutes later. `Update-Service.ps1` keeps whatever start type is installed. Tested under Windows PowerShell 5.1 against an installed service driving a physical CFA835: omitting `-StartType` gave `DelayedAutoStart = True`, `-StartType Automatic` gave `False`, the monitor reconnected on COM4 after each reinstall, and an invalid value was refused before anything changed. A cold boot with `Automatic` has not been timed yet.
+- `Install-Service.ps1 -StartType Automatic|Delayed` chooses when Windows starts the service. `Automatic` starts it with the other automatic services, so the panel is normally live by the time the logon screen appears; `Delayed` starts it about two minutes later. `Update-Service.ps1` keeps whatever start type is installed.
+
+### Changed
+
+- **`Install-Service.ps1` now installs the service with automatic (not delayed) start by default.** Every earlier release used delayed automatic start, which left the panel on the CFA835's own screen for about two minutes after boot. Pass `-StartType Delayed` to keep the old behaviour; re-running the installer on an existing delayed-start service without it switches the service to automatic start. `-StartType` was tested under Windows PowerShell 5.1 against an installed service driving a physical CFA835: `Delayed` gave `DelayedAutoStart = True`, `Automatic` and the new default gave `False`, the monitor reconnected on COM4 after each reinstall, and an invalid value was refused before anything changed. A cold boot with `Automatic` has not been timed yet.
 
 ### Fixed
 

@@ -5,11 +5,11 @@ param(
     [string]$InstallPath = 'C:\Program Files\Cfa835SystemMonitor',
     [string]$DataPath = 'C:\ProgramData\Cfa835SystemMonitor',
     [switch]$SkipPawnIO,
-    # Delayed: Windows starts the service about two minutes after the other automatic services, so
-    # the panel stays on the CFA835's own screen through boot and logon. Automatic: it starts with the
-    # other automatic services and the panel is normally live by the time the logon screen appears.
-    [ValidateSet('Delayed', 'Automatic')]
-    [string]$StartType = 'Delayed'
+    # Automatic (default): the service starts with the other automatic services, so the panel is
+    # normally live by the time the logon screen appears. Delayed: Windows starts it about two minutes
+    # after the other automatic services, and the panel stays on the CFA835's own screen until then.
+    [ValidateSet('Automatic', 'Delayed')]
+    [string]$StartType = 'Automatic'
 )
 
 $ErrorActionPreference = 'Stop'

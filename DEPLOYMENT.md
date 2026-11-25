@@ -309,14 +309,14 @@ The script installs `Cfa835SystemMonitor` as a LocalSystem service, configures r
 
 `-StartType` chooses when Windows starts the service:
 
-- `Delayed` (default): delayed automatic start, about two minutes after the other automatic services. The panel shows the CFA835's own screen through boot and logon.
-- `Automatic`: starts with the other automatic services, so the panel is normally live by the time the logon screen appears, before anyone signs in. Use it when the panel should show status from boot.
+- `Automatic` (default): starts with the other automatic services, so the panel is normally live by the time the logon screen appears, before anyone signs in.
+- `Delayed`: delayed automatic start, about two minutes after the other automatic services. The panel shows the CFA835's own screen through boot and logon. Use it to keep the monitor's start-up work out of the boot.
 
 ```powershell
-.\Install-Service.ps1 -StartType Automatic
+.\Install-Service.ps1 -StartType Delayed
 ```
 
-Re-running `Install-Service.ps1` applies the `-StartType` given, or `Delayed` when it is omitted, so pass the same value again on a reinstall. `Update-Service.ps1` leaves the start type unchanged. To change only the start type of an installed service:
+Re-running `Install-Service.ps1` applies the `-StartType` given, or `Automatic` when it is omitted, so pass `-StartType Delayed` again on a reinstall that should stay delayed. Releases before this option always installed delayed start. `Update-Service.ps1` leaves the start type unchanged. To change only the start type of an installed service:
 
 ```powershell
 & 'C:\Program Files\nssm\win64\nssm.exe' set Cfa835SystemMonitor Start SERVICE_AUTO_START          # Automatic
