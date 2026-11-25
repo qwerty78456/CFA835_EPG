@@ -20,37 +20,64 @@ public sealed class MonitorOptions
     public DisplayOptions Display { get; init; } = new();
     public ThermalOptions Thermal { get; init; } = new();
     public ShutdownOptions Shutdown { get; init; } = new();
+    public ReloadOptions Reload { get; init; } = new();
 
     /// <summary>Directory the configuration came from; relative layout and artwork paths hang off it.</summary>
     [JsonIgnore]
     public string ConfigDirectory { get; private set; } = AppContext.BaseDirectory;
+
+    /// <summary>Absolute path the configuration was loaded from (or would have been, when it is absent).</summary>
+    [JsonIgnore]
+    public string ConfigPath { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Stamp of <see cref="ConfigPath"/> taken immediately <em>before</em> it was read. Stamping first
+    /// means an edit racing the read can only cause one redundant reload, never a missed one.
+    /// </summary>
+    [JsonIgnore]
+    public FileStamp ConfigStamp { get; private set; }
 
     /// <summary>Absolute path of the layout file, whether or not graphic mode is enabled.</summary>
     public string ResolveLayoutPath() => Path.IsPathRooted(Display.LayoutPath)
         ? Display.LayoutPath
         : Path.Combine(ConfigDirectory, Display.LayoutPath);
 
-    public static MonitorOptions Load(string? requestedPath)
+    private static readonly JsonSerializerOptions SerializerOptions = new()
     {
-        string path = requestedPath ?? DefaultConfigPath();
+        PropertyNameCaseInsensitive = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true
+    };
+
+    /// <param name="requestedPath">The <c>--config</c> path, or null for <see cref="DefaultConfigPath"/>.</param>
+    /// <param name="allowMissing">
+    /// True at start-up, where an absent file means built-in defaults. A live reload passes false: a
+    /// file that vanished mid-save must be an error, never a silent revert of every setting.
+    /// </param>
+    public static MonitorOptions Load(string? requestedPath, bool allowMissing = true)
+    {
+        string path = Path.GetFullPath(requestedPath ?? DefaultConfigPath());
+        FileStamp stamp = FileStamp.Of(path);
         MonitorOptions options;
 
-        if (File.Exists(path))
+        if (stamp.Exists)
         {
-            string json = File.ReadAllText(path);
-            options = JsonSerializer.Deserialize<MonitorOptions>(json, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                ReadCommentHandling = JsonCommentHandling.Skip,
-                AllowTrailingCommas = true
-            }) ?? throw new InvalidDataException($"Configuration '{path}' is empty.");
+            string json = SharedFile.ReadAllText(path);
+            options = JsonSerializer.Deserialize<MonitorOptions>(json, SerializerOptions)
+                ?? throw new InvalidDataException($"Configuration '{path}' is empty.");
         }
-        else
+        else if (allowMissing)
         {
             options = new MonitorOptions();
         }
+        else
+        {
+            throw new FileNotFoundException($"Configuration '{path}' was not found.", path);
+        }
 
-        options.ConfigDirectory = Path.GetDirectoryName(Path.GetFullPath(path)) ?? AppContext.BaseDirectory;
+        options.ConfigPath = path;
+        options.ConfigStamp = stamp;
+        options.ConfigDirectory = Path.GetDirectoryName(path) ?? AppContext.BaseDirectory;
         options.Validate();
         return options;
     }
@@ -69,15 +96,26 @@ public sealed class MonitorOptions
 
     private void Validate()
     {
+        // "sampling": null deserializes to a null group; report it as a configuration error rather
+        // than a NullReferenceException (which would escape the start-up exit-78 mapping).
+        if (Device is null || Sampling is null || Display is null || Thermal is null || Shutdown is null || Reload is null)
+        {
+            throw new InvalidDataException(
+                "configuration groups device, sampling, display, thermal, shutdown and reload must not be null.");
+        }
+
         Device.Validate();
         Sampling.Validate();
         Display.Validate();
         Thermal.Validate();
         Shutdown.Validate();
+        Reload.Validate();
     }
 }
 
-public sealed class DeviceOptions
+// The option groups are records so a reload can tell which groups an edit actually changed.
+
+public sealed record DeviceOptions
 {
     public string Vid { get; init; } = "223B";
     public string Pid { get; init; } = "0005";
@@ -114,7 +152,7 @@ public sealed class DeviceOptions
         value.Length == 4 && value.All(Uri.IsHexDigit);
 }
 
-public sealed class SamplingOptions
+public sealed record SamplingOptions
 {
     public int TemperatureMs { get; init; } = 1000;
     public int ActivityMs { get; init; } = 100;
@@ -139,7 +177,7 @@ public sealed class SamplingOptions
     }
 }
 
-public sealed class DisplayOptions
+public sealed record DisplayOptions
 {
     public bool AutoCycleOnStart { get; init; }
     public int AutoCycleSeconds { get; init; } = 5;
@@ -186,7 +224,7 @@ public sealed class DisplayOptions
     }
 }
 
-public sealed class ThermalOptions
+public sealed record ThermalOptions
 {
     public double TjMaxC { get; init; } = 100;
     public double WarningMarginC { get; init; } = 10;
@@ -201,7 +239,7 @@ public sealed class ThermalOptions
     }
 }
 
-public sealed class ShutdownOptions
+public sealed record ShutdownOptions
 {
     public const int MinCountdownSeconds = 5;
     public const int MaxCountdownSeconds = 3600;
@@ -214,6 +252,25 @@ public sealed class ShutdownOptions
         {
             throw new InvalidDataException(
                 $"shutdown.countdownSeconds must be between {MinCountdownSeconds} and {MaxCountdownSeconds}.");
+        }
+    }
+}
+
+/// <summary>
+/// Live configuration reload. While the monitor runs it checks appsettings.json (and, in graphic
+/// mode, layout.json and every background PNG) every <see cref="PollMs"/> and applies a valid edit
+/// without restarting or releasing the COM port. An invalid edit is logged and ignored.
+/// </summary>
+public sealed record ReloadOptions
+{
+    public bool Enabled { get; init; } = true;
+    public int PollMs { get; init; } = 1000;
+
+    internal void Validate()
+    {
+        if (PollMs is < 250 or > 60_000)
+        {
+            throw new InvalidDataException("reload.pollMs must be between 250 and 60000.");
         }
     }
 }

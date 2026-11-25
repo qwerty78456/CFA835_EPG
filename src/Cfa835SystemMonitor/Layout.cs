@@ -273,7 +273,7 @@ public sealed class LayoutDocument
             throw new InvalidDataException($"Layout file '{path}' was not found.");
         }
 
-        LayoutDocument document = JsonSerializer.Deserialize<LayoutDocument>(File.ReadAllText(path), SerializerOptions)
+        LayoutDocument document = JsonSerializer.Deserialize<LayoutDocument>(SharedFile.ReadAllText(path), SerializerOptions)
             ?? throw new InvalidDataException($"Layout file '{path}' is empty.");
         document.Validate(Path.GetDirectoryName(Path.GetFullPath(path)) ?? AppContext.BaseDirectory);
         return document;
