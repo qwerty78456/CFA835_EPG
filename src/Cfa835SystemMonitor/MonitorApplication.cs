@@ -282,7 +282,7 @@ public sealed class MonitorApplication
             cancellationToken).ConfigureAwait(false);
         await device.FlushBufferAsync(cancellationToken).ConfigureAwait(false);
         Console.WriteLine(
-            $"Graphic page '{page.Id}' pushed: {frame.Length} bytes, font {runtime.Glyphs.FontFamily}");
+            $"Graphic page '{page.Id}' pushed: {frame.Length} bytes, font {runtime.FontFamily}");
         await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
 
         foreach (LayoutField field in page.FieldsFor(ShutdownUiState.Idle))
@@ -346,7 +346,7 @@ public sealed class MonitorApplication
             ?? Path.Combine(Environment.CurrentDirectory, $"layout-preview-{page.Id}.png");
         GrayscaleImage.SavePng(frame, output, commandLine.PreviewScale);
 
-        Console.WriteLine($"Font: {runtime.Glyphs.FontFamily}");
+        Console.WriteLine($"Font: {runtime.FontFamily}");
         Console.WriteLine($"Page: '{page.Id}' [{page.Kind}], background {page.BackgroundPath ?? "(none)"}");
         foreach (LayoutField field in page.FieldsFor(ShutdownUiState.Idle))
         {

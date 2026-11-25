@@ -5,8 +5,10 @@ namespace Cfa835SystemMonitor;
 
 /// <summary>
 /// Everything graphic mode needs that survives a device reconnect: the parsed layout, the glyph
-/// atlas and the decoded backgrounds. Built once at start-up because rasterizing fonts and decoding
-/// PNGs is far too expensive to repeat inside the reconnect loop.
+/// atlas and the decoded backgrounds. Built once per configuration snapshot -- at start-up, and
+/// again off the render loop when a live reload brings a new layout -- because rasterizing fonts
+/// and decoding PNGs is far too expensive for the reconnect or render path. Immutable apart from
+/// the composer's per-field diff cache, so a whole runtime can be swapped in by reference.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class GraphicRuntime
@@ -14,13 +16,17 @@ public sealed class GraphicRuntime
     private readonly Dictionary<string, LayoutPage> _pages;
 
     public LayoutDocument Layout { get; }
-    public GdiGlyphSource Glyphs { get; }
+    public IGlyphSource Glyphs { get; }
+
+    /// <summary>The font family the glyph atlas was actually rasterized from.</summary>
+    public string FontFamily { get; }
     public FrameComposer Composer { get; }
 
-    private GraphicRuntime(LayoutDocument layout, GdiGlyphSource glyphs, FrameComposer composer)
+    private GraphicRuntime(LayoutDocument layout, IGlyphSource glyphs, string fontFamily, FrameComposer composer)
     {
         Layout = layout;
         Glyphs = glyphs;
+        FontFamily = fontFamily;
         Composer = composer;
         _pages = layout.Pages.ToDictionary(page => page.Id, StringComparer.OrdinalIgnoreCase);
     }
@@ -31,12 +37,17 @@ public sealed class GraphicRuntime
 
     public static GraphicRuntime Create(MonitorOptions options, ILoggerFactory loggerFactory)
     {
-        ILogger logger = loggerFactory.CreateLogger<GraphicRuntime>();
         string path = options.ResolveLayoutPath();
-        LayoutDocument layout = LayoutDocument.Load(path);
+        return Create(LayoutDocument.Load(path), path, loggerFactory);
+    }
+
+    /// <summary>Rasterizes the glyph atlas and decodes every page background for an already validated layout.</summary>
+    public static GraphicRuntime Create(LayoutDocument layout, string layoutPath, ILoggerFactory loggerFactory)
+    {
+        ILogger logger = loggerFactory.CreateLogger<GraphicRuntime>();
         logger.LogInformation(
             "Loaded layout '{Path}': {Pages} page(s), refresh {RefreshMs} ms, full repaint every {Repaint}s",
-            path,
+            layoutPath,
             layout.Pages.Count,
             layout.RefreshMs,
             layout.FullRepaintSeconds);
@@ -52,11 +63,83 @@ public sealed class GraphicRuntime
                 continue;
             }
 
-            backgrounds[page.Id] = GrayscaleImage.Load(page.BackgroundPath, layout.InvertBackground);
+            try
+            {
+                backgrounds[page.Id] = GrayscaleImage.Load(page.BackgroundPath, layout.InvertBackground);
+            }
+            catch (Exception exception) when (exception is not InvalidDataException)
+            {
+                // GDI+ reports a truncated or non-image file as a bare ArgumentException ("Parameter
+                // is not valid") that names neither the page nor the file.
+                throw new InvalidDataException(
+                    $"layout page '{page.Id}': background '{page.BackgroundPath}' could not be decoded as an image ({exception.Message}).",
+                    exception);
+            }
+
             logger.LogInformation("Page '{Page}' background: {Path}", page.Id, page.BackgroundPath);
         }
 
-        return new GraphicRuntime(layout, glyphs, new FrameComposer(glyphs, backgrounds));
+        return Create(layout, glyphs, glyphs.FontFamily, backgrounds);
+    }
+
+    /// <summary>Assembles a runtime from parts; lets tests use a GDI-free glyph source.</summary>
+    public static GraphicRuntime Create(
+        LayoutDocument layout,
+        IGlyphSource glyphs,
+        string fontFamily,
+        IReadOnlyDictionary<string, byte[]> backgrounds) =>
+        new(layout, glyphs, fontFamily, new FrameComposer(glyphs, backgrounds));
+
+    /// <summary>
+    /// Composes every page -- every shutdown sub-state included -- against both an empty and a
+    /// populated metric snapshot, so every field's format and every glyph size is exercised once.
+    /// Layout validation is best-effort about formats and glyph sizes; anything it misses would
+    /// otherwise throw inside the render loop on every frame, dropping and re-opening the COM port
+    /// forever. Uses <see cref="FrameComposer.ComposeFullFrame"/>, which does not touch the diff cache.
+    /// </summary>
+    public void VerifyRenders()
+    {
+        DateTimeOffset timestamp = new(2026, 1, 1, 12, 34, 56, TimeSpan.Zero);
+        MetricSnapshot[] snapshots =
+        [
+            MetricSnapshot.Empty(timestamp),
+            new MetricSnapshot(
+                timestamp,
+                99.9,
+                [new TemperatureReading("Board", "System", 45.5, false)],
+                88.8,
+                123.45,
+                67.89,
+                true,
+                true,
+                true)
+        ];
+
+        foreach (LayoutPage page in Layout.Pages)
+        {
+            ShutdownUiState[] states = page.ResolvedKind == LayoutPageKind.Shutdown
+                ? Enum.GetValues<ShutdownUiState>()
+                : [ShutdownUiState.Idle];
+            foreach (ShutdownUiState state in states)
+            {
+                foreach (MetricSnapshot snapshot in snapshots)
+                {
+                    foreach (bool yes in new[] { false, true })
+                    {
+                        FieldContext context = new(snapshot, yes, state, yes, 30, 25);
+                        try
+                        {
+                            _ = Composer.ComposeFullFrame(page, context);
+                        }
+                        catch (Exception exception) when (exception is not InvalidDataException)
+                        {
+                            throw new InvalidDataException(
+                                $"layout page '{page.Id}' ({state}) cannot be rendered: {exception.Message}", exception);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
