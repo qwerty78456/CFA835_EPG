@@ -7,7 +7,7 @@ namespace Cfa835SystemMonitor;
 
 public sealed class WindowsMetricSource : IMetricSource
 {
-    private readonly MonitorOptions _options;
+    private SamplingOptions _sampling;
     private readonly ILogger<WindowsMetricSource> _logger;
     private readonly CpuUsageSampler _cpu = new();
     private readonly DiskActivitySampler _disk;
@@ -20,7 +20,7 @@ public sealed class WindowsMetricSource : IMetricSource
 
     public WindowsMetricSource(MonitorOptions options, ILoggerFactory loggerFactory)
     {
-        _options = options;
+        _sampling = options.Sampling;
         _logger = loggerFactory.CreateLogger<WindowsMetricSource>();
         _disk = new DiskActivitySampler(loggerFactory.CreateLogger<DiskActivitySampler>());
         _network = new NetworkRateSampler(new NativeNetworkCounterProvider());
@@ -29,6 +29,21 @@ public sealed class WindowsMetricSource : IMetricSource
 
     public bool IsPawnIoInstalled => TemperatureMonitor.IsPawnIoPresent();
 
+    /// <summary>
+    /// Applies reloaded sampling settings. The source itself is never rebuilt on reload: that would
+    /// reset the CPU, disk and network deltas and re-open LibreHardwareMonitor, which takes seconds.
+    /// Called on the render loop thread, the same thread that calls <see cref="Sample"/>.
+    /// </summary>
+    public void UpdateSampling(SamplingOptions sampling)
+    {
+        if (sampling.TemperatureMs != _sampling.TemperatureMs)
+        {
+            _nextHardwareSample = DateTimeOffset.MinValue;
+        }
+
+        _sampling = sampling;
+    }
+
     public MetricSnapshot Sample(DateTimeOffset now)
     {
         double? diskBytesPerSecond = _disk.Sample();
@@ -36,7 +51,7 @@ public sealed class WindowsMetricSource : IMetricSource
 
         if (now >= _nextHardwareSample)
         {
-            _nextHardwareSample = now.AddMilliseconds(_options.Sampling.TemperatureMs);
+            _nextHardwareSample = now.AddMilliseconds(_sampling.TemperatureMs);
             try
             {
                 _cpuPercent = _cpu.Sample();
