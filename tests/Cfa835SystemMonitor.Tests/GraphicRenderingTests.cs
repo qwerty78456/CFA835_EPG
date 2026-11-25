@@ -346,35 +346,4 @@ public sealed class GraphicRenderingTests
             SizePx = sizePx,
             Shade = shade
         };
-
-    /// <summary>
-    /// Deterministic stand-in for <see cref="GdiGlyphSource"/>: every non-space character is a solid
-    /// block, which keeps composition assertions exact and keeps GDI+ out of the test run.
-    /// </summary>
-    private sealed class BlockGlyphSource : IGlyphSource
-    {
-        public int CellHeight(int sizePx) => sizePx;
-
-        public int InkTop(int sizePx) => 1;
-
-        public int InkHeight(int sizePx) => sizePx - 2;
-
-        public Glyph Get(int sizePx, char character)
-        {
-            int width = Math.Max(1, sizePx / 2);
-            byte[] coverage = new byte[width * sizePx];
-            if (character != ' ')
-            {
-                for (int row = InkTop(sizePx); row < InkTop(sizePx) + InkHeight(sizePx); row++)
-                {
-                    for (int column = 0; column < width; column++)
-                    {
-                        coverage[(row * width) + column] = 255;
-                    }
-                }
-            }
-
-            return new Glyph(width, sizePx, coverage);
-        }
-    }
 }
