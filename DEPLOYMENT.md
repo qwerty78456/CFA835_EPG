@@ -123,7 +123,8 @@ The service scripts intentionally preserve the ProgramData configuration across 
 - `sampling`: temperature, activity, and display intervals;
 - `display`: rendering mode, layout file path, auto-cycle startup state, interval, date format, and time format;
 - `thermal`: TjMax, warning margin, and clear hysteresis;
-- `shutdown`: default countdown duration.
+- `shutdown`: default countdown duration;
+- `reload`: live configuration reload on/off and its polling interval (section 4.2).
 
 Keep secrets out of this file; the current schema contains no secret-bearing settings.
 
@@ -155,9 +156,36 @@ Deploying a graphic layout:
 
    In graphic mode `--hardware-test` pushes the first page and then outlines every field rectangle, so misplaced boxes are visible against the artwork. It clears the graphic buffer during restore, because the CFA835 cannot read a graphic frame back.
 
-An invalid `layout.json` — a rectangle leaving the 244x68 panel, an unknown `source`, a missing background file, a duplicate page id — fails at start-up with exit code 78 and a message naming the page and field index. It never reaches the monitor loop.
+An invalid `layout.json` — a rectangle leaving the 244x68 panel, an unknown `source`, a missing background file, a duplicate page id — fails at start-up with exit code 78 and a message naming the page and field index. It never reaches the monitor loop. The same mistake saved while the monitor is already running is a rejected live reload instead (section 4.2): one warning in the log, and the panel keeps the last valid layout.
 
 `layout.refreshMs` (100-60000) sets the graphic repaint cadence and replaces `sampling.displayMs` for this mode. 250 ms is a comfortable default; because only changed fields are retransmitted, a ticking clock costs roughly 1.4 KB per second.
+
+With live reload on, step 4's preview loop and the physical panel can be combined: edit `layout.json` and watch the running monitor apply each save within a few seconds.
+
+### 4.2 Live configuration reload
+
+```json
+"reload": { "enabled": true, "pollMs": 1000 }
+```
+
+While the monitor runs it checks, every `pollMs` (250-60000), the existence, last write time and length of:
+
+- the configuration file it was started with (`--config`, or the resolved default);
+- in graphic mode, the layout file and every background PNG the layout references, wherever they live.
+
+Nothing else in the directory is watched, so the service's `logs\` subdirectory beside a ProgramData configuration causes no activity. Once the changed files have been stable for 500 ms, the whole configuration is loaded, validated, rasterized and test-rendered on a background thread. Only a complete, valid result is applied, without restarting the process or releasing the COM port. See the README table for when each setting takes effect; in short, everything applies immediately except `device.*` (next reconnect) and `display.autoCycleOnStart` (start-up only).
+
+What the log shows:
+
+- At start-up: `Live configuration reload is on: watching <files> every <n> ms`, or `... is off (reload.enabled = false)`.
+- On a valid edit: `Configuration reloaded (<changed groups>): graphic mode, <n> page(s), font '<name>', current page '<id>'` or `... : text mode`.
+- On an invalid edit: `Configuration change rejected; the display keeps the running configuration. <file>: <reason>`. It is logged once per distinct error; the build is retried every 15 seconds and on every further save, so fixing the file, or copying in a PNG the layout was waiting for, is applied without further action.
+- While the shutdown confirmation or countdown is on screen, or a handover is in progress: `Configuration change is valid but deferred ...`. It applies as soon as the display returns to normal. Leaving the confirmation dialog open holds the change indefinitely.
+- After a `device.*` change: `device.* settings changed; they apply at the next reconnect and the open port is kept`.
+
+A configuration file that is deleted while the monitor runs is a rejected edit, not a revert to defaults. Setting `reload.enabled` to `false` takes effect immediately and stops further reloads until the process restarts. Changing the configuration file's own location requires a restart.
+
+A replacement file that has exactly the same length and last write time as the one it replaces is not detected; touch it or make any edit to trigger a reload.
 
 ## 5. CFA835 ownership and process replacement
 
@@ -294,6 +322,8 @@ $newRelease = 'E:\path\to\Cfa835SystemMonitor-<new-commit>-win-x64-<timestamp>'
 
 Operator-edited files under `C:\ProgramData\Cfa835SystemMonitor\` — `appsettings.json`, `layout.json`, and any background artwork — are never overwritten by an upgrade or a rollback. `Install-Service.ps1` seeds `layout.json` there only when the file is absent. A rollback to a build that predates graphic mode therefore leaves the layout in place, harmless because that build ignores it; a rollback with `display.mode` still set to `graphic` will fail on the older binary, so revert `display.mode` to `text` in the same step.
 
+Upgrading to a release with live configuration reload turns it on for existing installations, because their `appsettings.json` has no `reload` group (section 4.2). From then on, an edit saved under ProgramData is applied by the running service within a few seconds; do not stage half-finished edits in the live directory. Add `"reload": { "enabled": false }` before or after the upgrade to keep restart-to-apply behaviour. Older releases ignore the `reload` group, so rolling back needs no configuration change for it.
+
 Rollback uses the same command with the previously validated release folder:
 
 ```powershell
@@ -344,6 +374,25 @@ Steps 4 and 5 above describe the text screen. When graphic mode is deployed, rep
 4. Confirm the resolved font in the startup log line `Glyph atlas ready: font '<name>'`. A fallback to generic sans-serif means the families in `layout.fontFamilies` are not installed on this machine.
 5. Leave the monitor running for longer than `fullRepaintSeconds` and confirm the periodic full repaint is not visible as a flash.
 6. Page through every entry in `layout.pages`, then reach the shutdown page manually and confirm auto-cycle never lands on it.
+
+### 10.2 Additional steps for live configuration reload
+
+Edit the configuration the running process actually uses (ProgramData for the service). Before starting, record the monitor PID and the number of `Connected to` lines in its log. **Both must be unchanged after steps 1-11**: a reload never restarts the process or reconnects.
+
+1. Move one field 10 pixels in `layout.json` and save. Verify the panel shows it within about three seconds, with no blank frame, and the log shows one `Configuration reloaded` line.
+2. Delete a closing brace in `layout.json` and save. Verify the panel is unchanged and the log shows exactly one `Configuration change rejected` warning naming `layout.json`. Restore the brace; verify the edit from step 1 is still shown and `Configuration reloaded` is logged.
+3. Point a page at a PNG that is not 244x68. Verify the warning names the PNG and the panel is unchanged. Replace the PNG with a correct one *without touching `layout.json`*; verify it appears.
+4. Reference a PNG that does not exist yet, then copy it in. Verify it appears within about 20 seconds.
+5. Add a page; verify it joins the keypad ring. Remove the page currently shown; verify the display falls back to the first page.
+6. Toggle `gammaCorrection`. Verify one brief blank followed by a correct frame.
+7. Change `display.autoCycleSeconds` and `shutdown.countdownSeconds`. Verify the new auto-cycle interval and the new `Timeout` value on the shutdown page.
+8. Open the shutdown confirmation (Enter on the shutdown page), save a layout edit, and verify nothing changes on the panel and the log reports the change as deferred. Press Exit; verify the edit applies.
+9. Change `device.fallbackPort`. Verify the log says it applies at the next reconnect and the display keeps updating.
+10. Switch `display.mode` to `text`. Verify the artwork is cleared and the four text rows appear with no character cells torn through artwork. Switch back to `graphic`; verify the artwork returns and no text rows remain.
+11. Set `reload.enabled` to `false`. Verify the log says reload is now disabled, then make another edit and verify it is ignored.
+12. Restart the monitor (it picks up the disabled setting and any pending edit), set `reload.enabled` back to `true`, restart again, and unplug/replug the CFA835. Verify it reconnects on the edited configuration.
+
+Do not test a reload during an armed shutdown countdown outside a maintenance window.
 
 For a foreground process, verify the live binary from an elevated shell:
 
@@ -425,6 +474,15 @@ Symptom: `Opened CFA835 transport on COMx` followed by `CFA command 0x01 timed o
 - Use diagnostic output to identify the selected sensor source.
 - LibreHardwareMonitor/PawnIO chooses the hottest valid absolute temperature across hardware; some motherboard controllers expose poorly labelled channels.
 - `Distance to TjMax` is excluded, but firmware/sensor labels may still require machine-specific interpretation.
+
+### Edited configuration is not applied
+
+- Look for `Configuration change rejected` in the console or `stdout.log`. The message names the file and the reason; fix it and save again (or wait up to 15 seconds after copying in a missing PNG).
+- Look for `deferred`: the shutdown confirmation or countdown is on screen. Press Exit on the keypad.
+- Check the start-up line `Live configuration reload is on: watching ...`. If it says `off`, `reload.enabled` is `false`; edits apply only after a restart. The listed paths are the files actually watched: a service watches `C:\ProgramData\Cfa835SystemMonitor\`, not the release folder.
+- In text mode `layout.json` is not watched or read; switch `display.mode` to `graphic` first.
+- `device.*` changes wait for the next reconnect by design.
+- A file replaced by one with the same length and last write time is not noticed; save it again.
 
 ### Graphic mode exits immediately with code 78
 

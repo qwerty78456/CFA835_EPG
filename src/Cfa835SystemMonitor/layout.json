@@ -5,6 +5,10 @@
   // To use the artwork: drop a 244x68 PNG next to this file and add "background" to the page below,
   // e.g. "background": "background.png". Preview any change without hardware:
   //   Cfa835SystemMonitor.exe --layout-preview preview.png
+  //
+  // The running monitor picks up edits to this file, appsettings.json and the background PNGs
+  // within a few seconds ("reload": { "enabled": true } in appsettings.json, the default). An
+  // invalid edit is logged as a warning and ignored; the display keeps the last valid layout.
   "version": 1,
   "refreshMs": 250,
   "fullRepaintSeconds": 60,

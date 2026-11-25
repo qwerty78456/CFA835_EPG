@@ -2,6 +2,35 @@
 
 All notable changes are recorded here in reverse chronological order. Dates use the builder's local calendar date; `COMMIT.txt` in each release folder is the authoritative source revision.
 
+## 2026-11-25 — Live configuration reload
+
+### Added
+
+- The running monitor applies edits to `appsettings.json`, `layout.json` and every background PNG a layout references, within a few seconds and without restarting, releasing the COM port, or blanking the panel. Layout, artwork, sampling, thermal, shutdown and display settings all apply live, and `display.mode` switches between `text` and `graphic` live.
+- New `reload` settings group: `enabled` (default `true`) and `pollMs` (default `1000`, 250-60000). Existing configurations have no `reload` group, so **upgrading turns live reload on**; set `"reload": { "enabled": false }` to keep the previous restart-to-apply behaviour.
+- Operator log lines: `Live configuration reload is on: watching ...` at start-up, `Configuration reloaded (...)` when an edit is applied, and `Configuration change rejected; the display keeps the running configuration. <file>: <reason>` when it is not.
+
+### Changed
+
+- Files are checked by polling (existence, last write time, length) rather than a file-system watcher, so the busy `logs\` directory beside a service configuration and editors' temp-file saves cause no noise. An edit is built once its files have been stable for 500 ms.
+- `appsettings.json` and `layout.json` are now read with `FileShare.ReadWrite | Delete`, so an editor saving at the same moment as the monitor reads no longer fails.
+- A configuration group set to `null` (for example `"sampling": null`) is now a configuration error (exit code 78) instead of an unhandled exception.
+- In graphic mode every page is test-rendered in every shutdown sub-state before it is used, at start-up and on reload. A layout that validates but cannot render (a glyph size missing from the atlas, a format that throws) used to drop and re-open the COM port on every frame; it is now rejected up front. A background PNG that is not a valid image is reported naming the page and the file instead of `Parameter is not valid`.
+- The reconnect back-off checks for configuration changes every 250 ms and retries at once after one is applied, so a corrected `device.fallbackPort` takes effect without waiting out a 30 s back-off.
+- Frames are built from one consistent, locked snapshot of the page state.
+
+### Safety
+
+- An invalid or half-saved edit never reaches the display: the new configuration is loaded, validated, rasterized and test-rendered on a background thread, and only a complete result is swapped in. A rejected edit is logged once and the running configuration stays in force; fixing the file (or copying in a PNG the layout was waiting for) is picked up automatically.
+- A configuration file that disappears while the monitor runs is a rejected edit, never a silent revert to built-in defaults.
+- A reload never disturbs the shutdown dialog. While the confirmation or an armed countdown is on screen, or a process handover is in progress, a valid edit waits and is applied when the display returns to normal.
+- `device.*` changes apply at the next reconnect; a reload never drops a working COM port.
+- Text and graphic output are never mixed on the panel: switching to text clears the graphic buffer and returns to automatic flush first, and the exit cleanup clears the graphic buffer whenever graphic mode was active at any point.
+
+### Validation
+
+- 200 automated tests (56 new): configuration loading, in-place controller reconfiguration, graphic wire sequences, snapshot building against real files, the reload state machine with injected stamps and background work (no sleeps), and every display transition. The local development machine has no CFA835; live reload on the physical panel is an explicit acceptance step (DEPLOYMENT.md section 10.2).
+
 ## 2026-09-04 — Elevated single-owner runtime
 
 ### Added
