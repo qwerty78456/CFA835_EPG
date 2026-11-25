@@ -2,6 +2,23 @@
 
 All notable changes are recorded here in reverse chronological order. Dates use the builder's local calendar date; `COMMIT.txt` in each release folder is the authoritative source revision.
 
+## Unreleased — Abandoned handover recovery
+
+### Fixed
+
+- A running monitor no longer gets stuck when a new process asks to take over and then vanishes before reading the answer (killed, interrupted with Ctrl+C, or its window closed). Before, the owner kept running but ignored every keypad press, refused every live configuration reload, and had stopped its handover pipe, until it was restarted. Now it waits until that requester process has exited and then resumes keypad input and reload on its own. A configuration edit deferred in the meantime is applied then.
+- The handover pipe keeps serving after a request fails. One misbehaving or vanished requester no longer leaves the owner without an endpoint for the next, legitimate replacement.
+
+### Safety
+
+- The owner resumes only after the accepted requester (same PID and start time) has exited. While it is alive it may still fall back to aborting any shutdown and terminating the owner, and accepting keys in that window could arm a shutdown that nothing would be left to cancel. If the requester's exit cannot be tracked, the owner stays paused and logs that a restart is needed.
+- A shutdown countdown cancelled for the abandoned handover stays cancelled and is not re-armed; the panel returns to the first page with auto-cycle off. Foreground/service separation and requester verification are unchanged.
+- New log lines: `Accepted CFA835 handover to ... could not be confirmed to it`, then `Handover requester process <pid> exited without taking over ...`. The reload-deferral warning during a pending handover now says the edit applies if the handover is abandoned, instead of always asking for a restart.
+
+### Tests
+
+- The owner side of the handover is now testable without named pipes: `HandoverRequestHandler` works over a `Stream`, `ControlServer` over an `IControlListener`, and process checks sit behind `IHandoverProcesses`. New tests cover delivered and undelivered acceptance, waiting for the requester, untrackable requesters, cancelled countdowns, cancellation while waiting, foreground/service and verification rejections, and the server loop surviving a failed request. `PageController.ResumeAfterFailedHandover` is covered for keys, reload, a cancelled countdown, and an open confirmation dialog.
+
 ## 2026-11-25 — Live configuration reload
 
 ### Added

@@ -95,7 +95,10 @@ public static class Program
                 return OwnershipConflictExitCode;
             }
 
-            coordinator.StartControlServer(application.PrepareForReplacement, shutdown.Cancel);
+            coordinator.StartControlServer(
+                application.PrepareForReplacement,
+                application.ResumeAfterFailedHandover,
+                shutdown.Cancel);
 
             return RunApplicationAsync(application, commandLine, shutdown.Token).GetAwaiter().GetResult();
         }

@@ -121,6 +121,11 @@ forced to stop only after its PID, start time, executable path, product metadata
 been verified. `--layout-preview` and `--list-sensors` do not claim the CFA835 and can run alongside
 the monitor.
 
+If the new process vanishes after the owner accepted (it was killed, interrupted, or its window was
+closed before it read the answer), the owner keeps running. Keys and configuration reload stay
+paused until that process has exited, because until then it may still stop the owner, and then
+resume. A shutdown countdown cancelled for the handover is not re-armed.
+
 Configuration and graphic-layout validation complete before an existing foreground owner is asked
 to exit. Invalid input therefore exits with code 78 without interrupting a healthy monitor.
 

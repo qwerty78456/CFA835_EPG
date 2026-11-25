@@ -192,7 +192,10 @@ public sealed class PageController
         }
     }
 
-    /// <summary>True once a process handover was accepted; keys and reconfiguration are refused from then on.</summary>
+    /// <summary>
+    /// True once a process handover was accepted; keys and reconfiguration are refused until the
+    /// process exits or <see cref="ResumeAfterFailedHandover"/> rolls the acceptance back.
+    /// </summary>
     public bool ReplacementPending
     {
         get
@@ -380,6 +383,28 @@ public sealed class PageController
         }
 
         return ReplacementPreparationResult.Ready(shutdownWasPending: true, shutdownCancelled: true);
+    }
+
+    /// <summary>
+    /// Rolls back <see cref="PrepareForReplacement"/> after an accepted handover was abandoned, so
+    /// keys and live reload work again. Only the instance coordinator calls this, and only once the
+    /// requester that was accepted has exited without taking over: while it is alive it may still
+    /// abort any shutdown and terminate this process, and a key press in that window could arm a
+    /// shutdown that nothing would be left to cancel.
+    /// </summary>
+    /// <remarks>
+    /// Only the latch is cleared. If preparation cancelled an armed countdown, the Windows shutdown
+    /// stays cancelled and is not re-armed: the controller remains Idle on the first page with
+    /// auto-cycle off, exactly as after the operator pressing Exit during the countdown, and the
+    /// operator can start a new countdown from the Shutdown page. If preparation found the Confirm
+    /// dialog open, that dialog is still open and usable.
+    /// </remarks>
+    public void ResumeAfterFailedHandover()
+    {
+        lock (_sync)
+        {
+            _replacementPending = false;
+        }
     }
 
     private bool HandleIdleKey(CfaKey key, DateTimeOffset now)

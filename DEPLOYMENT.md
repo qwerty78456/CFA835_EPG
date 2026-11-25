@@ -205,6 +205,16 @@ bad new release cannot stop a healthy foreground monitor. Exit code 77 means the
 Administrator check failed, code 75 means ownership was deliberately left with another process, and
 code 78 means the platform, configuration, or layout is invalid.
 
+If the new process accepts the handover but disappears before it reads the answer (it was killed,
+interrupted with Ctrl+C, or its window was closed), the running monitor keeps the panel. It pauses
+keypad input and configuration reload until that requester process has exited, then resumes on its
+own. It logs `Accepted CFA835 handover to ... could not be confirmed to it` followed by
+`Handover requester process <pid> exited without taking over`. A shutdown countdown that the
+handover cancelled stays cancelled: the panel returns to the first page with auto-cycle off, and a
+new countdown can be started from the Shutdown page. If the monitor cannot tell whether the
+requester has exited, it stays paused and logs an error asking for a restart. The control pipe also
+keeps serving after a failed request, so a later start can still take over cleanly.
+
 Service and foreground ownership never replace one another:
 
 - if service `Cfa835SystemMonitor` is active, a foreground hardware mode logs the service state and
@@ -481,6 +491,7 @@ Symptom: `Opened CFA835 transport on COMx` followed by `CFA command 0x01 timed o
 
 - Look for `Configuration change rejected` in the console or `stdout.log`. The message names the file and the reason; fix it and save again (or wait up to 15 seconds after copying in a missing PNG).
 - Look for `deferred`: the shutdown confirmation or countdown is on screen. Press Exit on the keypad.
+- `deferred: this process accepted a handover`: a new process asked to take over and has not done so. The edit applies once that process has exited (section 5). If `Restart the monitor to recover` was logged, restart the monitor.
 - Check the start-up line `Live configuration reload is on: watching ...`. If it says `off`, `reload.enabled` is `false`; edits apply only after a restart. The listed paths are the files actually watched: a service watches `C:\ProgramData\Cfa835SystemMonitor\`, not the release folder.
 - In text mode `layout.json` is not watched or read; switch `display.mode` to `graphic` first.
 - `device.*` changes wait for the next reconnect by design.

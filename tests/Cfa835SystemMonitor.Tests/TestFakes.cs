@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Cfa835SystemMonitor.Tests;
@@ -153,4 +154,115 @@ internal sealed class RecordingLogger : ILogger
             _entries.Add((logLevel, message));
         }
     }
+}
+
+/// <summary>
+/// One control connection: reads a scripted request and records the response, or fails every write
+/// the way a named pipe does once its client has gone.
+/// </summary>
+internal sealed class ScriptedConnection(string request) : Stream
+{
+    private readonly MemoryStream _input = new(Encoding.UTF8.GetBytes(request));
+    private readonly MemoryStream _output = new();
+
+    public bool FailWrites { get; init; }
+    public bool Disposed { get; private set; }
+    public string Response => Encoding.UTF8.GetString(_output.ToArray());
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => true;
+    public override long Length => throw new NotSupportedException();
+    public override long Position
+    {
+        get => throw new NotSupportedException();
+        set => throw new NotSupportedException();
+    }
+
+    public override int Read(byte[] buffer, int offset, int count) => _input.Read(buffer, offset, count);
+
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult(_input.Read(buffer.Span));
+
+    public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
+
+    public override void Write(ReadOnlySpan<byte> buffer)
+    {
+        if (FailWrites)
+        {
+            throw new IOException("Pipe is broken.");
+        }
+
+        _output.Write(buffer);
+    }
+
+    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        Write(buffer.Span);
+        return ValueTask.CompletedTask;
+    }
+
+    public override void Flush()
+    {
+    }
+
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        Disposed = true;
+        base.Dispose(disposing);
+    }
+}
+
+/// <summary>Process checks for the handover endpoint, with the requester's exit under test control.</summary>
+internal sealed class FakeHandoverProcesses(InstanceDescriptor owner) : IHandoverProcesses
+{
+    public string? VerificationError { get; init; }
+    public TaskCompletionSource<bool> RequesterExit { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public List<int> WaitedFor { get; } = [];
+
+    public InstanceDescriptor DescribeOwner() => owner;
+
+    public bool TryVerifyRequester(InstanceDescriptor requester, out string? error)
+    {
+        error = VerificationError;
+        return error is null;
+    }
+
+    public Task<bool> WaitForExitAsync(InstanceDescriptor process, CancellationToken cancellationToken)
+    {
+        WaitedFor.Add(process.Pid);
+        return RequesterExit.Task.WaitAsync(cancellationToken);
+    }
+}
+
+/// <summary>Hands out queued connections, then either fails or waits for cancellation.</summary>
+internal sealed class FakeControlListener(params Stream[] connections) : IControlListener
+{
+    private readonly Queue<Stream> _connections = new(connections);
+
+    public Exception? FailWhenEmpty { get; init; }
+    public TaskCompletionSource Drained { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public bool Disposed { get; private set; }
+
+    public async Task<Stream> AcceptAsync(CancellationToken cancellationToken)
+    {
+        if (_connections.TryDequeue(out Stream? connection))
+        {
+            return connection;
+        }
+
+        if (FailWhenEmpty is not null)
+        {
+            throw FailWhenEmpty;
+        }
+
+        Drained.TrySetResult();
+        await Task.Delay(Timeout.Infinite, cancellationToken);
+        throw new InvalidOperationException("unreachable");
+    }
+
+    public void Dispose() => Disposed = true;
 }

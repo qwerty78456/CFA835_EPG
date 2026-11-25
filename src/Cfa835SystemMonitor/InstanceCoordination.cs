@@ -58,13 +58,256 @@ public sealed record InstanceAcquireResult(bool Acquired, string? Error)
     public static InstanceAcquireResult Conflict(string error) => new(false, error);
 }
 
+/// <summary>The process facts the handover endpoint needs; a seam so the endpoint is testable.</summary>
+public interface IHandoverProcesses
+{
+    /// <summary>Describes this (owning) process.</summary>
+    InstanceDescriptor DescribeOwner();
+
+    /// <summary>Checks that a requester is the live, verified foreground process it claims to be.</summary>
+    bool TryVerifyRequester(InstanceDescriptor requester, out string? error);
+
+    /// <summary>
+    /// Completes once the process <paramref name="process"/> describes (same PID and start time) is
+    /// no longer running: true when it has exited or no longer exists, false when its state cannot
+    /// be determined. Cancellation throws.
+    /// </summary>
+    Task<bool> WaitForExitAsync(InstanceDescriptor process, CancellationToken cancellationToken);
+}
+
+/// <summary>A source of control connections, one at a time; the pipe server in production.</summary>
+public interface IControlListener : IDisposable
+{
+    /// <summary>Waits for the next client. The returned stream is disposed by the caller.</summary>
+    Task<Stream> AcceptAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>Serves control connections one after another until cancelled.</summary>
+public static class ControlServer
+{
+    /// <summary>
+    /// Runs the accept/handle loop and disposes <paramref name="listener"/> when it ends. A request
+    /// that fails is logged and the endpoint keeps serving: one misbehaving or vanished requester
+    /// must not leave a healthy owner without a handover endpoint. Only a failure to listen at all
+    /// (for example the pipe cannot be created) ends the loop early.
+    /// </summary>
+    public static async Task RunAsync(
+        IControlListener listener,
+        Func<Stream, CancellationToken, Task> handleAsync,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        using (listener)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                Stream connection;
+                try
+                {
+                    connection = await listener.AcceptAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(exception, "The instance control pipe stopped unexpectedly");
+                    return;
+                }
+
+                using (connection)
+                {
+                    try
+                    {
+                        await handleAsync(connection, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception exception)
+                    {
+                        logger.LogWarning(
+                            exception,
+                            "A control request failed; the control pipe stays open for the next request");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// <summary>
+/// The owner's side of one handover request: verify the requester, prepare the monitor, answer,
+/// and either stop (answer delivered) or roll the preparation back (answer undeliverable, once
+/// the requester has gone).
+/// </summary>
+public sealed class HandoverRequestHandler(
+    InstanceRunContext ownerContext,
+    IHandoverProcesses processes,
+    Func<ReplacementPreparationResult> prepareForReplacement,
+    Action resumeAfterFailedHandover,
+    Action stopAfterAcceptedResponse,
+    ILogger logger)
+{
+    public const int ProtocolVersion = 1;
+
+    internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    private static readonly UTF8Encoding Utf8 = new(false);
+
+    public async Task HandleAsync(Stream connection, CancellationToken cancellationToken)
+    {
+        using StreamReader reader = new(
+            connection, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 1024, leaveOpen: true);
+        InstanceDescriptor owner = processes.DescribeOwner();
+        InstanceDescriptor? requester = null;
+        ReplacementPreparationResult? preparation = null;
+        TakeoverResponse response;
+
+        try
+        {
+            string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            TakeoverRequest? request = line is null
+                ? null
+                : JsonSerializer.Deserialize<TakeoverRequest>(line, JsonOptions);
+            requester = request?.Requester;
+
+            if (request is null || request.ProtocolVersion != ProtocolVersion)
+            {
+                response = new(ProtocolVersion, false, "Unsupported takeover request.", owner, false, false);
+            }
+            else if (!InstanceCoordinator.MayReplace(request.Requester.RunContext, ownerContext))
+            {
+                response = new(
+                    ProtocolVersion,
+                    false,
+                    "Foreground and service instances do not replace each other.",
+                    owner,
+                    false,
+                    false);
+            }
+            else
+            {
+                string? validationError = request.Requester.Pid == owner.Pid
+                    ? "requester PID matches the owner PID"
+                    : null;
+                if (validationError is not null ||
+                    !processes.TryVerifyRequester(request.Requester, out validationError))
+                {
+                    response = new(
+                        ProtocolVersion,
+                        false,
+                        $"The replacement requester could not be verified: {validationError}",
+                        owner,
+                        false,
+                        false);
+                }
+                else
+                {
+                    preparation = prepareForReplacement();
+                    response = new(
+                        ProtocolVersion,
+                        preparation.Accepted,
+                        preparation.Reason,
+                        owner,
+                        preparation.ShutdownWasPending,
+                        preparation.ShutdownCancelled);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is JsonException or IOException)
+        {
+            response = new(ProtocolVersion, false, $"Invalid takeover request: {exception.Message}", owner, false, false);
+        }
+
+        // Written straight to the stream rather than through a StreamWriter: disposing a writer
+        // flushes again, which would throw a second time on a broken pipe.
+        byte[] payload = Utf8.GetBytes(JsonSerializer.Serialize(response, JsonOptions) + Environment.NewLine);
+        try
+        {
+            await connection.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+            await connection.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (response.Accepted && exception is not OperationCanceledException)
+        {
+            await AbandonUndeliveredAcceptanceAsync(requester!, preparation!, exception, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        if (response.Accepted)
+        {
+            // Let the replacement receive its acknowledgement before cancellation can tear down
+            // this coordinator and its pipe.
+            logger.LogInformation(
+                "Accepted CFA835 handover request from {Mode} process {Pid}",
+                requester!.Mode,
+                requester.Pid);
+            stopAfterAcceptedResponse();
+        }
+    }
+
+    /// <summary>
+    /// The handover was accepted and the monitor prepared, but the requester never got the answer
+    /// (typically it was killed, interrupted, or its window was closed after sending the request).
+    /// </summary>
+    /// <remarks>
+    /// Rolling back at once is not safe. A requester that is still alive (for example one whose
+    /// read timed out) falls back to the legacy path, which aborts any Windows shutdown and then
+    /// terminates this process. If keys were re-enabled in between, an operator could arm a
+    /// shutdown after that abort, and terminating this process would leave it with nothing on the
+    /// panel able to cancel it. So keys and reload stay paused until the accepted requester (same
+    /// PID and start time) has exited; only then is the preparation rolled back. If its exit cannot
+    /// be tracked, the pause is kept and the operator is told to restart. The pipe server is not
+    /// served while waiting; the startup mutex the requester holds keeps other starters out anyway.
+    /// </remarks>
+    private async Task AbandonUndeliveredAcceptanceAsync(
+        InstanceDescriptor requester,
+        ReplacementPreparationResult preparation,
+        Exception failure,
+        CancellationToken cancellationToken)
+    {
+        logger.LogWarning(
+            "Accepted CFA835 handover to {Mode} process {Pid} could not be confirmed to it ({Message}); keypad and configuration reload stay paused until that process exits",
+            requester.Mode,
+            requester.Pid,
+            failure.Message);
+
+        if (!await processes.WaitForExitAsync(requester, cancellationToken).ConfigureAwait(false))
+        {
+            logger.LogError(
+                "Could not tell whether handover requester process {Pid} has exited; keypad and configuration reload stay paused. Restart the monitor to recover",
+                requester.Pid);
+            return;
+        }
+
+        resumeAfterFailedHandover();
+        if (preparation.ShutdownCancelled)
+        {
+            // The rollback restores input, not the countdown: re-arming a shutdown nobody asked to
+            // re-arm would be worse than leaving it cancelled.
+            logger.LogWarning(
+                "Handover requester process {Pid} exited without taking over. The monitor resumed; the Windows shutdown countdown cancelled for the handover stays cancelled and can be started again from the Shutdown page",
+                requester.Pid);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Handover requester process {Pid} exited without taking over; the monitor resumed keypad input and configuration reload",
+                requester.Pid);
+        }
+    }
+}
+
 /// <summary>
 /// Serializes starts and owns the machine-wide CFA835 lease. Mutex acquisition and release are kept
 /// on the synchronous Main thread because Win32 mutex ownership is thread-affine.
 /// </summary>
 public sealed class InstanceCoordinator : IDisposable
 {
-    private const int ProtocolVersion = 1;
+    private const int ProtocolVersion = HandoverRequestHandler.ProtocolVersion;
     private const string ServiceName = "Cfa835SystemMonitor";
     private const string ProcessName = "Cfa835SystemMonitor";
     private const string ExecutableName = "Cfa835SystemMonitor.exe";
@@ -74,7 +317,7 @@ public sealed class InstanceCoordinator : IDisposable
     private static readonly TimeSpan StartupWait = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan GracefulStopWait = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ForcedStopWait = TimeSpan.FromSeconds(5);
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = HandoverRequestHandler.JsonOptions;
 
     private readonly ILogger _logger;
     private readonly AppMode _mode;
@@ -183,8 +426,15 @@ public sealed class InstanceCoordinator : IDisposable
     }
 
     /// <summary>Starts the control endpoint, then lets the next start enter the arbitration gate.</summary>
+    /// <param name="prepareForReplacement">Pauses the monitor and cancels its shutdown countdown.</param>
+    /// <param name="resumeAfterFailedHandover">
+    /// Undoes the preparation when the acceptance could not be delivered and the requester has
+    /// since exited without taking over.
+    /// </param>
+    /// <param name="stopAfterAcceptedResponse">Stops this process once the acceptance was delivered.</param>
     public void StartControlServer(
         Func<ReplacementPreparationResult> prepareForReplacement,
+        Action resumeAfterFailedHandover,
         Action stopAfterAcceptedResponse)
     {
         if (!_ownsDeviceMutex)
@@ -193,13 +443,19 @@ public sealed class InstanceCoordinator : IDisposable
         }
 
         _serverCancellation = new CancellationTokenSource();
-        NamedPipeServerStream firstServer = CreatePipeServer();
-        _serverTask = Task.Run(
-            () => RunControlServerAsync(
-                firstServer,
-                prepareForReplacement,
-                stopAfterAcceptedResponse,
-                _serverCancellation.Token));
+        CancellationToken token = _serverCancellation.Token;
+
+        // The first pipe instance exists before the startup mutex is released, so the next starter
+        // always finds the endpoint.
+        PipeControlListener listener = new(CreatePipeServer(), CreatePipeServer);
+        HandoverRequestHandler handler = new(
+            _runContext,
+            new WindowsHandoverProcesses(this),
+            prepareForReplacement,
+            resumeAfterFailedHandover,
+            stopAfterAcceptedResponse,
+            _logger);
+        _serverTask = Task.Run(() => ControlServer.RunAsync(listener, handler.HandleAsync, _logger, token));
         ReleaseStartupMutex();
     }
 
@@ -334,124 +590,90 @@ public sealed class InstanceCoordinator : IDisposable
         }
     }
 
-    private async Task RunControlServerAsync(
-        NamedPipeServerStream firstServer,
-        Func<ReplacementPreparationResult> prepareForReplacement,
-        Action stopAfterAcceptedResponse,
-        CancellationToken cancellationToken)
+    /// <summary>Process checks for the handover endpoint, using the same verification as replacement.</summary>
+    private sealed class WindowsHandoverProcesses(InstanceCoordinator coordinator) : IHandoverProcesses
     {
-        NamedPipeServerStream? server = firstServer;
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                NamedPipeServerStream activeServer = server!;
-                using (activeServer)
-                {
-                    await activeServer.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
-                    await HandleControlRequestAsync(
-                        activeServer,
-                        prepareForReplacement,
-                        stopAfterAcceptedResponse,
-                        cancellationToken).ConfigureAwait(false);
-                }
+        public InstanceDescriptor DescribeOwner() => coordinator.DescribeCurrentProcess();
 
-                server = cancellationToken.IsCancellationRequested ? null : CreatePipeServer();
+        public bool TryVerifyRequester(InstanceDescriptor requester, out string? error) =>
+            TryValidateDescriptor(requester, out _, out error);
+
+        public async Task<bool> WaitForExitAsync(InstanceDescriptor process, CancellationToken cancellationToken)
+        {
+            Process running;
+            try
+            {
+                running = Process.GetProcessById(process.Pid);
             }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            _logger.LogWarning(exception, "The instance control pipe stopped unexpectedly");
-        }
-        finally
-        {
-            server?.Dispose();
+            catch (ArgumentException)
+            {
+                return true;
+            }
+
+            using (running)
+            {
+                try
+                {
+                    // A different start time means the PID now belongs to another process.
+                    if (running.HasExited || running.StartTime.ToUniversalTime() != process.StartTimeUtc)
+                    {
+                        return true;
+                    }
+
+                    await running.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                    return true;
+                }
+                catch (InvalidOperationException)
+                {
+                    // Thrown when the process exited between the lookup and the query.
+                    return true;
+                }
+                catch (Win32Exception exception)
+                {
+                    coordinator._logger.LogWarning(
+                        "Could not open handover requester process {Pid}: {Message}",
+                        process.Pid,
+                        exception.Message);
+                    return false;
+                }
+            }
         }
     }
 
-    private async Task HandleControlRequestAsync(
-        NamedPipeServerStream server,
-        Func<ReplacementPreparationResult> prepareForReplacement,
-        Action stopAfterAcceptedResponse,
-        CancellationToken cancellationToken)
+    /// <summary>One protected pipe instance at a time; a fresh instance is created per connection.</summary>
+    private sealed class PipeControlListener(
+        NamedPipeServerStream firstServer,
+        Func<NamedPipeServerStream> createServer) : IControlListener
     {
-        using StreamReader reader = new(
-            server, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 1024, leaveOpen: true);
-        using StreamWriter writer = new(server, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true };
-        InstanceDescriptor owner = DescribeCurrentProcess();
-        InstanceDescriptor? requester = null;
-        TakeoverResponse response;
+        private NamedPipeServerStream? _pending = firstServer;
 
-        try
+        public async Task<Stream> AcceptAsync(CancellationToken cancellationToken)
         {
-            string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-            TakeoverRequest? request = line is null
-                ? null
-                : JsonSerializer.Deserialize<TakeoverRequest>(line, JsonOptions);
-            requester = request?.Requester;
-
-            if (request is null || request.ProtocolVersion != ProtocolVersion)
+            while (true)
             {
-                response = new(ProtocolVersion, false, "Unsupported takeover request.", owner, false, false);
-            }
-            else if (!MayReplace(request.Requester.RunContext, _runContext))
-            {
-                response = new(
-                    ProtocolVersion,
-                    false,
-                    "Foreground and service instances do not replace each other.",
-                    owner,
-                    false,
-                    false);
-            }
-            else
-            {
-                string? validationError = request.Requester.Pid == owner.Pid
-                    ? "requester PID matches the owner PID"
-                    : null;
-                if (validationError is not null ||
-                    !TryValidateDescriptor(request.Requester, out _, out validationError))
+                NamedPipeServerStream server = _pending ?? createServer();
+                _pending = server;
+                try
                 {
-                    response = new(
-                        ProtocolVersion,
-                        false,
-                        $"The replacement requester could not be verified: {validationError}",
-                        owner,
-                        false,
-                        false);
+                    await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+                    _pending = null;
+                    return server;
                 }
-                else
+                catch (IOException)
                 {
-                    ReplacementPreparationResult preparation = prepareForReplacement();
-                    response = new(
-                        ProtocolVersion,
-                        preparation.Accepted,
-                        preparation.Reason,
-                        owner,
-                        preparation.ShutdownWasPending,
-                        preparation.ShutdownCancelled);
+                    // A client that connects and vanishes before the connection completes breaks
+                    // only this pipe instance; serve the next client on a fresh one.
+                    _pending = null;
+                    server.Dispose();
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
                 }
             }
         }
-        catch (Exception exception) when (exception is JsonException or IOException)
-        {
-            response = new(ProtocolVersion, false, $"Invalid takeover request: {exception.Message}", owner, false, false);
-        }
 
-        await writer.WriteLineAsync(JsonSerializer.Serialize(response, JsonOptions).AsMemory(), cancellationToken)
-            .ConfigureAwait(false);
-        if (response.Accepted)
+        public void Dispose()
         {
-            // Let the replacement receive its acknowledgement before cancellation can tear down
-            // this coordinator and its pipe.
-            _logger.LogInformation(
-                "Accepted CFA835 handover request from {Mode} process {Pid}",
-                requester!.Mode,
-                requester.Pid);
-            stopAfterAcceptedResponse();
+            _pending?.Dispose();
+            _pending = null;
         }
     }
 

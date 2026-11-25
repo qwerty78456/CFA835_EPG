@@ -555,6 +555,69 @@ public sealed class DisplayTests
     }
 
     [Fact]
+    public void ResumeAfterFailedHandoverAcceptsKeysAndReconfigurationAgain()
+    {
+        PageController pages = Controller(_display, new FakeShutdownExecutor());
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-17T12:00:00Z");
+        Assert.True(pages.PrepareForReplacement().Accepted);
+        Assert.False(pages.HandleKey(CfaKey.Right, now));
+
+        pages.ResumeAfterFailedHandover();
+
+        Assert.False(pages.ReplacementPending);
+        Assert.True(pages.HandleKey(CfaKey.Right, now.AddMilliseconds(200)));
+        Assert.Equal(PageCategory.Network, pages.Category);
+        Assert.True(pages.TryReconfigure(_display, new ShutdownOptions(), [new PageDescriptor("Other", false)]));
+        Assert.Equal("Other", pages.CurrentPageId);
+    }
+
+    [Fact]
+    public void ResumeAfterFailedHandoverLeavesCancelledCountdownCancelled()
+    {
+        FakeShutdownExecutor executor = new();
+        PageController pages = Controller(_display, executor);
+        DateTimeOffset now = StartCountdown(pages);
+        Assert.True(pages.PrepareForReplacement().ShutdownCancelled);
+
+        pages.ResumeAfterFailedHandover();
+
+        // The rollback restores input only: the shutdown is not re-armed, and the controller is
+        // Idle on the first page with auto-cycle off, as after Exit during the countdown.
+        Assert.Single(executor.Requested);
+        Assert.Equal(1, executor.AbortCount);
+        Assert.Equal(ShutdownUiState.Idle, pages.ShutdownState);
+        Assert.Equal(PageCategory.DateTime, pages.Category);
+        Assert.False(pages.AutoCycle);
+
+        // The operator can arm a new countdown, and Exit can still cancel it.
+        Assert.True(pages.HandleKey(CfaKey.Left, now = now.AddMilliseconds(200)));
+        Assert.Equal(PageCategory.Shutdown, pages.Category);
+        pages.HandleKey(CfaKey.Enter, now = now.AddMilliseconds(200));
+        pages.HandleKey(CfaKey.Left, now = now.AddMilliseconds(200));
+        pages.HandleKey(CfaKey.Enter, now = now.AddMilliseconds(200));
+        Assert.Equal(ShutdownUiState.CountingDown, pages.ShutdownState);
+        Assert.Equal(2, executor.Requested.Count);
+        Assert.True(pages.HandleKey(CfaKey.Exit, now.AddMilliseconds(200)));
+        Assert.Equal(2, executor.AbortCount);
+    }
+
+    [Fact]
+    public void ResumeAfterFailedHandoverKeepsAnOpenConfirmDialog()
+    {
+        PageController pages = Controller(_display, new FakeShutdownExecutor());
+        DateTimeOffset now = NavigateToShutdown(pages);
+        pages.HandleKey(CfaKey.Enter, now = now.AddMilliseconds(200));
+        Assert.Equal(ShutdownUiState.Confirm, pages.ShutdownState);
+        Assert.False(pages.PrepareForReplacement().ShutdownWasPending);
+
+        pages.ResumeAfterFailedHandover();
+
+        Assert.Equal(ShutdownUiState.Confirm, pages.ShutdownState);
+        Assert.True(pages.HandleKey(CfaKey.Exit, now.AddMilliseconds(200)));
+        Assert.Equal(ShutdownUiState.Idle, pages.ShutdownState);
+    }
+
+    [Fact]
     public void ReconfigureWithoutPagesRestoresTheBuiltInRing()
     {
         // Switching graphic -> text hands the controller no layout pages.

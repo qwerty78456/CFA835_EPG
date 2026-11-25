@@ -235,9 +235,11 @@ public sealed class MonitorApplication
                     if (pages.ReplacementPending)
                     {
                         // Normally the process exits moments after accepting a handover. Still being
-                        // here means the replacement never took over, and keys stay disabled too.
+                        // here means the replacement has not taken over (yet), and keys are disabled
+                        // too. The coordinator resumes both once that requester has exited; the
+                        // deferred change is then applied by a later poll.
                         _logger.LogWarning(
-                            "Configuration change is valid but cannot be applied: this process accepted a handover to a replacement that never took over. Restart the monitor to apply it");
+                            "Configuration change is valid but deferred: this process accepted a handover to a replacement that has not taken over. It applies if that handover is abandoned; restart the monitor if this persists");
                     }
                     else
                     {
@@ -304,6 +306,12 @@ public sealed class MonitorApplication
         PageController? pages = Volatile.Read(ref _activePages);
         return pages?.PrepareForReplacement() ?? ReplacementPreparationResult.Ready();
     }
+
+    /// <summary>
+    /// Undoes <see cref="PrepareForReplacement"/> after an accepted handover was abandoned by a
+    /// requester that has since exited. See <see cref="PageController.ResumeAfterFailedHandover"/>.
+    /// </summary>
+    public void ResumeAfterFailedHandover() => Volatile.Read(ref _activePages)?.ResumeAfterFailedHandover();
 
     private static bool IsElevated() => TemperatureMonitor.IsElevated();
 
