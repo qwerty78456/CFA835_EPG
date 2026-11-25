@@ -10,13 +10,29 @@ namespace Cfa835SystemMonitor;
 /// </summary>
 public readonly record struct FileStamp(bool Exists, DateTime LastWriteTimeUtc, long Length)
 {
-    /// <summary>Stats <paramref name="path"/>. Never throws: an unreadable path stamps as missing.</summary>
+    /// <summary>
+    /// Stats <paramref name="path"/>, following a symbolic link to its final target (a link's own
+    /// time and length never change when the target is edited). Never throws: an unreadable path or
+    /// a broken link stamps as missing.
+    /// </summary>
     public static FileStamp Of(string path)
     {
         try
         {
             FileInfo info = new(path);
-            return info.Exists ? new FileStamp(true, info.LastWriteTimeUtc, info.Length) : default;
+            if (!info.Exists)
+            {
+                return default;
+            }
+
+            if (info.LinkTarget is not null)
+            {
+                return info.ResolveLinkTarget(returnFinalTarget: true) is FileInfo { Exists: true } target
+                    ? new FileStamp(true, target.LastWriteTimeUtc, target.Length)
+                    : default;
+            }
+
+            return new FileStamp(true, info.LastWriteTimeUtc, info.Length);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
             or ArgumentException or NotSupportedException or System.Security.SecurityException)
@@ -230,6 +246,7 @@ public sealed class ConfigReloader
     private Task<IReadOnlyList<FileStamp>>? _probe;
     private IReadOnlyList<string>? _probePaths;
     private Task<ConfigBuildResult>? _build;
+    private IReadOnlyList<TrackedFile>? _buildBaseline;
     private IReadOnlyList<FileStamp>? _settlingOn;
     private DateTimeOffset _settleStart;
     private ConfigSnapshot? _candidate;
@@ -255,6 +272,10 @@ public sealed class ConfigReloader
     public bool Enabled => _current.Options.Reload.Enabled;
 
     /// <summary>A validated configuration ready to apply, or null. Never throws, blocks or touches the disk.</summary>
+    /// <param name="now">
+    /// A monotonic time. Only differences between calls matter; a wall clock stepped backwards
+    /// would otherwise suspend probing, settling and retries for the size of the step.
+    /// </param>
     public ConfigSnapshot? Poll(DateTimeOffset now)
     {
         try
@@ -358,7 +379,7 @@ public sealed class ConfigReloader
             _settlingOn = null;
             if (_failure is not null && now >= _retryAt)
             {
-                StartBuild();
+                StartBuild(paths, stamps);
             }
 
             return;
@@ -367,7 +388,11 @@ public sealed class ConfigReloader
         if (_candidate is not null)
         {
             // Edited again while the candidate waited (e.g. behind the shutdown dialog): it no longer
-            // matches the disk, so rebuild from what is there now.
+            // matches the disk, so rebuild from what is there now. Its stamps join the baseline so
+            // the file that moved still differs on the next probe. Falling back to the running (or
+            // last failed) watch list alone could already match the disk -- a candidate built by the
+            // slow retry, for instance -- and the edit would then never be rebuilt.
+            _expected = MergeWatchList(_expected, _candidate.Files);
             _candidate = null;
             _settlingOn = null;
         }
@@ -381,18 +406,21 @@ public sealed class ConfigReloader
 
         if (now - _settleStart >= SettleWindow)
         {
-            StartBuild();
+            StartBuild(paths, stamps);
         }
     }
 
-    private void StartBuild()
+    private void StartBuild(IReadOnlyList<string> paths, IReadOnlyList<FileStamp> stamps)
     {
         _settlingOn = null;
+        _buildBaseline = paths.Zip(stamps, (path, stamp) => new TrackedFile(path, stamp)).ToArray();
         _build = _work.Run(_builder.TryBuild);
     }
 
     private void OnBuilt(ConfigBuildResult result, DateTimeOffset now)
     {
+        IReadOnlyList<TrackedFile> baseline = _buildBaseline ?? [];
+        _buildBaseline = null;
         if (result.Torn)
         {
             // Still being written. The next probe will see moving stamps and settle again.
@@ -405,12 +433,21 @@ public sealed class ConfigReloader
             _candidate = result.Snapshot;
             _failure = null;
             _retryAt = DateTimeOffset.MaxValue;
+
+            // A valid candidate has been announced, so the next rejection must be logged even if its
+            // text repeats an earlier one; otherwise the log would still promise the deferred change.
+            _loggedFailure = null;
             return;
         }
 
         _failure = result.Error ?? "unknown configuration error";
         _retryAt = now + FailedRetryInterval;
-        _expected = MergeWatchList(_current.Files, result.Files);
+
+        // Watched files the failed attempt never reached (a background behind a layout typo, a
+        // layout.json a graphic -> text switch stopped reading) take the stamps that were on disk
+        // when the build started. Keeping their older running stamps would make the next probe see
+        // a "change" and rebuild every second instead of every FailedRetryInterval.
+        _expected = MergeWatchList(MergeWatchList(_current.Files, baseline), result.Files);
         if (!string.Equals(_failure, _loggedFailure, StringComparison.Ordinal))
         {
             _loggedFailure = _failure;

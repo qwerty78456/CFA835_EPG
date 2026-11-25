@@ -69,7 +69,7 @@ public sealed class MonitorApplication
         {
             // Disconnected here, so applying a reload is pure reference swaps; device.* edits made
             // during an outage are picked up by the locator built just below.
-            ApplyReload(DateTimeOffset.Now);
+            ApplyReload();
 
             ICfaTransport transport = new SerialCfaTransport(_loggerFactory.CreateLogger<SerialCfaTransport>());
             await using Cfa835Device device = new(transport, _loggerFactory.CreateLogger<Cfa835Device>());
@@ -106,7 +106,7 @@ public sealed class MonitorApplication
                     DateTimeOffset now = DateTimeOffset.Now;
 
                     // 1. Swap in a reloaded configuration (no-throw reference assignments only).
-                    if (ApplyReload(now))
+                    if (ApplyReload())
                     {
                         leds.Reconfigure(state.Options.Thermal);
                     }
@@ -216,10 +216,11 @@ public sealed class MonitorApplication
         return 0;
 
         // Polls the reloader and, when it offers a validated configuration, switches to it. Runs on
-        // the render loop thread only. Never throws and never touches the device.
-        bool ApplyReload(DateTimeOffset now)
+        // the render loop thread only. Never throws and never touches the device. The reloader runs
+        // on monotonic time so a wall-clock correction cannot suspend it.
+        bool ApplyReload()
         {
-            ConfigSnapshot? candidate = reloader.Poll(now);
+            ConfigSnapshot? candidate = reloader.Poll(MonotonicNow());
             if (candidate is null)
             {
                 return false;
@@ -231,8 +232,18 @@ public sealed class MonitorApplication
                 if (!ReferenceEquals(deferred, candidate))
                 {
                     deferred = candidate;
-                    _logger.LogInformation(
-                        "Configuration change is valid but deferred while the shutdown dialog is open or a handover is in progress; it applies when the display returns to normal");
+                    if (pages.ReplacementPending)
+                    {
+                        // Normally the process exits moments after accepting a handover. Still being
+                        // here means the replacement never took over, and keys stay disabled too.
+                        _logger.LogWarning(
+                            "Configuration change is valid but cannot be applied: this process accepted a handover to a replacement that never took over. Restart the monitor to apply it");
+                    }
+                    else
+                    {
+                        _logger.LogInformation(
+                            "Configuration change is valid but deferred while the shutdown dialog is open; it applies when the display returns to normal");
+                    }
                 }
 
                 return false;
@@ -268,11 +279,13 @@ public sealed class MonitorApplication
 
         async Task<bool> WaitForRetryAsync(int seconds)
         {
-            DateTimeOffset until = DateTimeOffset.Now.AddSeconds(seconds);
-            while (DateTimeOffset.Now < until)
+            // Monotonic: a wall-clock step backwards (e.g. a boot-time NTP correction) must not
+            // stretch a 1 s back-off into hours with the panel dark.
+            long deadline = Environment.TickCount64 + (seconds * 1000L);
+            while (Environment.TickCount64 < deadline)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
-                if (ApplyReload(DateTimeOffset.Now))
+                if (ApplyReload())
                 {
                     return true;
                 }
@@ -281,6 +294,9 @@ public sealed class MonitorApplication
             return false;
         }
     }
+
+    private static DateTimeOffset MonotonicNow() =>
+        DateTimeOffset.UnixEpoch.AddMilliseconds(Environment.TickCount64);
 
     /// <summary>Prepares any active monitor state for a controlled process handover.</summary>
     public ReplacementPreparationResult PrepareForReplacement()

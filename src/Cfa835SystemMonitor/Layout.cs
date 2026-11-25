@@ -42,7 +42,19 @@ public sealed class LayoutField
     public string Source { get; init; } = "literal";
     public string? Format { get; init; }
     public string? Text { get; init; }
-    public string Fallback { get; init; } = "N/A";
+
+    /// <summary>
+    /// Text shown when the bound sensor is unreadable. <c>"fallback": null</c> means blank: it used to
+    /// reach the renderer as null and throw inside the render loop on every unreadable sample.
+    /// </summary>
+    public string Fallback
+    {
+        get => _fallback;
+        init => _fallback = value ?? string.Empty;
+    }
+
+    private readonly string _fallback = "N/A";
+
     public int X { get; init; }
     public int Y { get; init; }
     public int Width { get; init; }

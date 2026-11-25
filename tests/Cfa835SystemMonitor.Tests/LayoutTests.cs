@@ -40,6 +40,21 @@ public sealed class LayoutTests : IDisposable
         """;
 
     [Fact]
+    public void NullFallbackMeansBlank()
+    {
+        // "fallback": null used to reach the renderer as null and throw inside the render loop on
+        // every unreadable sample; render verification would now reject the whole layout instead.
+        string json = MinimalPage.Replace(
+            "\"source\": \"datetime\", \"format\": \"HH:mm:ss\"",
+            "\"source\": \"cpu.temperature\", \"format\": \"0\", \"fallback\": null",
+            StringComparison.Ordinal);
+
+        LayoutField field = Assert.Single(Assert.Single(Load(json).Pages).Fields);
+
+        Assert.Equal(string.Empty, field.Fallback);
+    }
+
+    [Fact]
     public void ParsesFieldsAndResolvesEnums()
     {
         LayoutDocument layout = Load(MinimalPage);

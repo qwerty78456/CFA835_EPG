@@ -168,6 +168,33 @@ public sealed class ConfigurationTests : IDisposable
     }
 
     [Fact]
+    public void FileStampFollowsASymbolicLinkToItsTarget()
+    {
+        // A link's own time and length never change when the target is edited, so stamping the link
+        // would hide every edit made through it.
+        string target = Write("""{ "shutdown": { "countdownSeconds": 30 } }""", "target.json");
+        string link = Path.Combine(_directory, "linked.json");
+        try
+        {
+            File.CreateSymbolicLink(link, target);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Creating symbolic links needs Developer Mode or elevation; nothing to check without one.
+            return;
+        }
+
+        FileStamp before = FileStamp.Of(link);
+        File.WriteAllText(target, """{ "shutdown": { "countdownSeconds": 45, "extra": true } }""");
+        File.SetLastWriteTimeUtc(target, new DateTime(2026, 11, 2, 0, 0, 0, DateTimeKind.Utc));
+
+        Assert.Equal(FileStamp.Of(target), FileStamp.Of(link));
+        Assert.NotEqual(before, FileStamp.Of(link));
+        File.Delete(target);
+        Assert.False(FileStamp.Of(link).Exists);
+    }
+
+    [Fact]
     public void FileStampNeverThrowsForAnInvalidPath()
     {
         Assert.False(FileStamp.Of("C:\\bad\0path\\x.json").Exists);

@@ -192,6 +192,18 @@ public sealed class PageController
         }
     }
 
+    /// <summary>True once a process handover was accepted; keys and reconfiguration are refused from then on.</summary>
+    public bool ReplacementPending
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _replacementPending;
+            }
+        }
+    }
+
     /// <summary>The page ring currently in use (layout pages, or the built-in text ring).</summary>
     public IReadOnlyList<PageDescriptor> Pages
     {

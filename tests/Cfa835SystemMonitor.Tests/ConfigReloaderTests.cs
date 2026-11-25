@@ -279,6 +279,87 @@ public sealed class ConfigReloaderTests
     }
 
     [Fact]
+    public void ADeferredCandidateFromTheRetryIsRebuiltWhenItsArtworkChangesAgain()
+    {
+        // Review finding: dropping a held candidate fell back to a watch list that already matched
+        // the disk, so a valid edit was never rebuilt -- although the log promised it would apply.
+        const string OldPng = @"C:\cfg\old.png";
+        const string NewPng = @"C:\cfg\new.png";
+        ConfigReloader reloader = Reloader(Snapshot((Config, 1), (Layout, 1), (OldPng, 1)));
+        _builder.Disk[Config] = Stamp(1);
+        _builder.Disk[Layout] = Stamp(2);
+        _builder.Disk[OldPng] = Stamp(1);
+
+        // layout.json now names new.png, which is not there yet: no background gets stamped.
+        _builder.Build = () => Failure("background 'new.png' was not found", (Config, 1), (Layout, 2));
+        DriveUntilBuilds(reloader, 1);
+
+        // new.png arrives (unwatched); the 15 s retry builds a valid candidate, which the shutdown
+        // dialog holds back.
+        _builder.Disk[NewPng] = Stamp(1);
+        ConfigSnapshot first = Snapshot((Config, 1), (Layout, 2), (OldPng, 1), (NewPng, 1));
+        _builder.Build = () => Success(first);
+        Assert.Same(first, DriveUntilOffered(reloader));
+
+        // The artwork is re-exported while the candidate waits.
+        _builder.Disk[NewPng] = Stamp(2);
+        ConfigSnapshot second = Snapshot((Config, 1), (Layout, 2), (OldPng, 1), (NewPng, 2));
+        _builder.Build = () => Success(second);
+        ConfigSnapshot? offered = null;
+        for (int poll = 0; poll < 10 && offered != second; poll++)
+        {
+            offered = Poll(reloader, afterMs: 1000);
+        }
+
+        Assert.Same(second, offered);
+    }
+
+    [Fact]
+    public void AFailedEditIsNotRebuiltEverySecondWhenAFileItNeverReadChanges()
+    {
+        // Review finding: a background the failed attempt never reached kept its old running stamp,
+        // so after one re-export every probe saw a "change" and rebuilt about once a second.
+        const string Art = @"C:\cfg\bg.png";
+        ConfigReloader reloader = Reloader(Snapshot((Config, 1), (Layout, 1), (Art, 1)));
+        _builder.Disk[Config] = Stamp(1);
+        _builder.Disk[Layout] = Stamp(2);
+        _builder.Disk[Art] = Stamp(1);
+        _builder.Build = () => Failure("layout.json: typo", (Config, 1), (Layout, 2));
+        DriveUntilBuilds(reloader, 1);
+
+        _builder.Disk[Art] = Stamp(2);
+        DriveUntilBuilds(reloader, 2);
+        for (int poll = 0; poll < 10; poll++)
+        {
+            Poll(reloader, afterMs: 1000);
+        }
+
+        Assert.Equal(2, _builder.Builds);
+    }
+
+    [Fact]
+    public void TheSameErrorIsLoggedAgainAfterAValidChangeWasOffered()
+    {
+        // Review finding: otherwise the log's last word stays "valid but deferred" while the file on
+        // disk is broken again, and nothing will apply when the dialog closes.
+        ConfigReloader reloader = Reloader(Snapshot((Config, 1)));
+        _builder.Disk[Config] = Stamp(2);
+        _builder.Build = () => Failure("same mistake", (Config, 2));
+        DriveUntilBuilds(reloader, 1);
+
+        _builder.Disk[Config] = Stamp(3);
+        _builder.Build = () => Success(Snapshot((Config, 3)));
+        Assert.NotNull(DriveUntilOffered(reloader));
+
+        _builder.Disk[Config] = Stamp(4);
+        _builder.Build = () => Failure("same mistake", (Config, 4));
+        DriveUntilBuilds(reloader, 3);
+        Poll(reloader, afterMs: 1);
+
+        Assert.Equal(2, _logger.At(LogLevel.Warning).Count());
+    }
+
+    [Fact]
     public void TreatsATornBuildAsStillChangingWithoutAWarning()
     {
         ConfigSnapshot edited = Snapshot((Config, 2));
